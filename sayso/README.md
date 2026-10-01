@@ -177,9 +177,10 @@ first voice-placed trade.
 
 Requires Python 3.12 or 3.13, a microphone, and a Shoonya account with API
 access. Tested on macOS and Windows 11; speech recognition uses MLX on Apple
-Silicon and faster-whisper elsewhere, both fully local. Get the code with
-`git clone https://github.com/etyagi07/sayso.git`, or **Code → Download ZIP**
-on GitHub. [TUTORIAL.md](TUTORIAL.md) walks through every step.
+Silicon and faster-whisper elsewhere, both fully local. In Sayso for Mac this
+engine is the `sayso/` folder of `github.com/etyagi07/sayso-mac`: clone that,
+and run the steps below from `sayso/`. [TUTORIAL.md](TUTORIAL.md) walks
+through every step.
 
 ```bash
 ./setup.sh                                          # macOS / Linux

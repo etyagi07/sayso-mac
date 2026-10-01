@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Every test in ProjectZero, in one go: the engine fork, the bridge, the panel.
+# Every test in this repo, in one go: the engine fork, the bridge, the panel.
 # Nothing is sent anywhere and no test touches live state (each suite runs in a
 # throwaway SAYSO_HOME). Exits non-zero if anything fails.
 #   ./test.sh

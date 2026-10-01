@@ -1,0 +1,24 @@
+name: tests
+
+on:
+  push:
+  pull_request:
+
+# Every suite runs offline: a fake broker for the engine, a scripted engine
+# for the bridge, sample states for the panel. No credentials, no
+# microphone, nothing sent anywhere.
+jobs:
+  test:
+    runs-on: macos-15          # Apple Silicon, like every Mac Sayso runs on
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: engine environment
+        run: |
+          cd sayso
+          python -m venv .venv
+          .venv/bin/python -m pip install -q -r requirements.txt
+      - name: all suites
+        run: ./test.sh

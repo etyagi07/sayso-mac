@@ -41,7 +41,10 @@ echo "${D}   installing dependencies (a few minutes on first run)...${X}"
 echo "${G}ok${X} dependencies installed"
 
 echo
-echo "${D}Next steps:${X}"
+echo "${D}Next steps for Sayso for Mac (from the repo root):${X}"
+echo "  app/build.sh, then open app/build/Sayso.app    ${D}LIVE: every confirmed order is real${X}"
+echo
+echo "${D}Or the terminal version, from this folder:${X}"
 echo "  1. ./.venv/bin/python -m voice.calibrate      ${D}measures your microphone${X}"
 echo "  2. ./.venv/bin/python -m shoonya.login        ${D}once per trading day - asks for your API credentials${X}"
 echo "  3. ./.venv/bin/python -m voice.doctor         ${D}checks everything${X}"

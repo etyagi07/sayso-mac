@@ -36,13 +36,13 @@ to.
 Get the code, **either** with git:
 
 ```bash
-git clone https://github.com/etyagi07/sayso.git
-cd sayso
+git clone https://github.com/etyagi07/sayso-mac.git
+cd sayso-mac/sayso
 ```
 
-**or** without git: on [github.com/etyagi07/sayso](https://github.com/etyagi07/sayso)
-choose **Code → Download ZIP**, extract it, and open a terminal in the
-extracted folder (the one containing `setup.sh`).
+**or** without git: on [github.com/etyagi07/sayso-mac](https://github.com/etyagi07/sayso-mac)
+choose **Code → Download ZIP**, extract it, and open a terminal in its
+`sayso` folder (the one containing `setup.sh`).
 
 Then run the setup:
 

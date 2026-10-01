@@ -17,6 +17,9 @@ To learn it, start with a 1-share order.
 
 ## Install
 
+**Today, Sayso is built from source.** The [README](../README.md) has the
+steps. A signed download comes later; once it exists, installing is:
+
 1. Drag **Sayso** into your **Applications** folder.
 2. Open it. The first time, macOS asks you to confirm opening an app
    downloaded from the internet: click **Open**.

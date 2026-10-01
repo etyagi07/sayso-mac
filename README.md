@@ -1,102 +1,97 @@
-# ProjectZero
+# Sayso for Mac
 
-**Sayso, for the Mac.** Sayso is a voice-trading engine for Indian markets. You
-say the order, it works out the exact contract and reads it back, and it sends
-the order only when you press `y`. ProjectZero is the product around it: a
-floating panel that sits beside the chart all day.
+**Voice trading for Shoonya, in a small panel beside your chart.** Speak the
+order, glance at the card, press `y`.
 
-> *Speak the order. Glance. Press y.* Nothing trades without your say-so.
+![The confirm card: BUY 23150 CALL, Nifty 29 Sep, 1 lot, at market, with y to send](docs/images/card.png)
 
-## The split
+> **Real money.** Every order you confirm with `y` goes to your Shoonya
+> account. There is no paper-trading mode. Start with a 1-share order.
+> Sayso places the orders you ask for; it is not investment advice. It is
+> an independent project, not affiliated with Shoonya or Finvasia.
 
-| | Where | Owns |
-|---|---|---|
-| **Engine** | `sayso/` (Ekansh's fork) | speech → order, contracts, prices, limits, sending, following fills, login |
-| **Body kit** | everything else here | how it looks, sounds, onboards and is supported; no trading logic |
+## What it does
 
-The engine may be changed where the product needs it, in the fork only and
-with tests. The client's live copy (`~/Desktop/Sayso/sayso`) is never modified from
-here.
+1. **You speak.** Hold the talk key (⌃⌥Space by default) and say it the way
+   you would to a dealer:
+   - "Buy two lots of Nifty 23100 call"
+   - "Buy 10 Infosys intraday"
+   - "Exit my Bank Nifty put"
+   - "What is Nifty at?"
+2. **Sayso works out the exact order.** It finds the contract in the broker's
+   own symbol master, prices it against the live market, and checks it
+   against your limits. Anything unclear gets a question, never a guess.
+3. **You confirm with a key, never your voice.** The card shows the resolved
+   order, and Sayso reads it back. `y` sends it, and only once the card has
+   been on screen for 0.7 s. `Esc`, a timeout, or losing the engine cancels.
+4. **It follows through.** Fills, rejections and "may be live" are shown and
+   spoken. A resting order is followed until it fills.
 
-## Read in this order
+**Supported:**
+- Nifty, Bank Nifty and Sensex options: buy to open, and exit;
+- Nifty 50 stocks: buy and sell, intraday or delivery;
+- quotes, positions, funds, today's orders and your limits, by voice.
 
-1. **`CLAUDE.md`**: the rules.
-2. **`HANDOFF.md`**: the current state and what's next.
-3. **`docs/user-guide.md`**: what a trader sees and does.
-4. **`docs/face-spec.md`**: the design of the panel.
-5. **`docs/review-2026-09-30.md`**: the latest review, scores and decisions.
-6. **`sayso/README.md`**: the engine, including its "Notes on the Shoonya
-   API".
+## Requirements
 
-`docs/archive/` and `config/archive/` hold earlier designs; nothing in them is
-current.
+- An Apple Silicon Mac (M1 or later) on macOS 14 or later.
+- Xcode or the Command Line Tools (Swift 5.10 or later), to build the panel.
+- Python 3.12 or 3.13 (Homebrew's is fine), for the engine.
+- A Shoonya account with API access. On its API key page, set the redirect
+  URL to exactly `http://127.0.0.1:8787/` and register your IP address.
+  Options need the F&O segments: NFO for Nifty and Bank Nifty, BFO for
+  Sensex.
 
-## Run it (macOS 14+, Apple Silicon)
+## Build and run
+
+There is no prebuilt download yet; signed builds come later. From source:
 
 ```bash
-cd sayso && ./setup.sh && cd ..      # once: the engine's Python environment
-app/build.sh                         # builds app/build/Sayso.app, the dev build
-open app/build/Sayso.app             # LIVE: real orders
+git clone https://github.com/etyagi07/sayso-mac
+cd sayso-mac
+(cd sayso && ./setup.sh)     # the engine's Python environment (a few minutes)
+app/build.sh                 # builds app/build/Sayso.app
+open app/build/Sayso.app     # LIVE: real orders
 ```
 
-- The app starts the engine (`bridge/bridge.py`) itself.
-  - Live runs on 127.0.0.1:8787, which must be the redirect URL on the
-    Shoonya API key page.
-  - There is no demo mode: every order is real. The tests run on a
-    scripted engine in `tests/fakes.py` that no build ships.
-- Only one Sayso panel can be open at a time.
-- **First run:** Setup & health opens by itself. Connect Shoonya, register
-  the IP, and set up the mic, all in the panel.
+On first launch, accept the one-time notice. **Setup & health** then walks
+you through connecting Shoonya, registering this Mac's IP, and setting up
+the microphone. The speech model (about 0.5 GB) downloads the first time you
+speak. After that, read the [user guide](docs/user-guide.md).
 
-**Keys:** see `HANDOFF.md` or the user guide.
+## How it's built
+
+| Part | What it does |
+|---|---|
+| `sayso/` | The engine: speech → order, contracts, prices, limits, sending and following orders, login. A fork of Sayso, the terminal voice trader |
+| `bridge/` | Runs the engine as a local background process on `127.0.0.1:8787`, with a per-run secret only your app knows |
+| `app/` | The native SwiftUI panel. It shows what the engine decides and holds no trading logic |
+
+**Privacy.** Speech is recognised on your Mac. Nothing goes anywhere except:
+- your orders and account requests, to Shoonya;
+- one-time downloads: Shoonya's connector from PyPI and the speech model from
+  Hugging Face.
+
+Your API secret is asked for at login and never saved.
 
 ## Tests
 
 ```bash
-cd sayso && for t in tests/test_*.py; do .venv/bin/python "$t"; done && cd ..
-sayso/.venv/bin/python -m unittest discover -s tests
-cd app && swift test
+./test.sh
 ```
 
-| Suite | What |
-|---|---|
-| Engine | 16 files, 210 tests |
-| Bridge | 65 tests over real HTTP, including the real agent with a stubbed broker |
-| Panel | 49 tests: the state machine, the installer, and every shape's fit |
+It runs every suite: the engine (16 files), the bridge (65 tests over real
+HTTP) and the panel (49). None of them needs a broker, a microphone or
+credentials, and nothing is sent anywhere.
 
-Nothing is sent anywhere, and no test touches live state.
+## More
 
-## Packaging (the self-contained app)
+- [User guide](docs/user-guide.md): set-up, keys, sounds, limits, accounts,
+  troubleshooting.
+- [Development notes](docs/development.md): the layout, packaging and signing.
+- [Panel design](docs/face-spec.md) and the [engine's README](sayso/README.md),
+  including notes on the Shoonya API.
 
-```bash
-PYTHON_RUNTIME=app/build/runtime/python app/package.sh   # -> app/build/dist/Sayso.app
-```
+## Licence
 
-- **`PYTHON_RUNTIME`** is an unpacked python-build-standalone "install_only"
-  CPython 3.13 for aarch64-apple-darwin. The one used on 2026-09-30:
-  - release `20260929`, file
-    `cpython-3.13.15+20260929-aarch64-apple-darwin-install_only.tar.gz`;
-  - from github.com/astral-sh/python-build-standalone;
-  - sha256 `003d459a75ff6949a6590812b1e02a65e849b5b2a9f47c421010138ec643a11c`.
-- **Dependencies:** `app/requirements-dist.txt`, which leaves out torch.
-- **Shoonya's connector** (NorenRestApiOAuth) is **not** shipped: its licence
-  forbids copying. On first launch each Mac downloads that one file from
-  PyPI, pinned by checksum in `app/sdk-requirements.txt`.
-- **First launch:** the app installs its engine into
-  `~/Library/Application Support/Sayso`, and keeps each user's login,
-  settings and logs there.
-- **Size:** about 705 MB for the app and 698 MB installed, plus about 0.5 GB
-  for the speech model on first use.
-- **Signing and notarising:** `app/sign.sh` signs every library and
-  executable, then the app, with the hardened runtime and the entitlements in
-  `app/entitlements/`, then notarises and staples it.
-  - It needs a Developer ID and a notarytool profile; see the script's
-    header.
-  - `DEVELOPER_ID=- app/sign.sh` runs the signing half ad hoc. It was tested
-    on 2026-10-01: all 207 libraries plus the interpreter signed, and under
-    the hardened runtime numba's JIT, PortAudio and the MLX speech model all
-    ran.
-  - The installer clears macOS's download quarantine flag on its own copy of
-    the engine (tested). Gatekeeper then judges the app once, not every
-    binary inside the engine.
-  - Until it is signed with a real Developer ID, it runs only on this Mac.
+MIT. See [LICENSE](LICENSE).

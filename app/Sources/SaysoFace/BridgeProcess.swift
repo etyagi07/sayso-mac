@@ -150,7 +150,7 @@ struct EngineLocation {
 /// failing. Stops it on quit if this app started it. It never stops an engine
 /// another Sayso window is using: the bridge refuses that itself.
 ///
-///   SAYSO_PROJECT   path to a ProjectZero checkout (development)
+///   SAYSO_PROJECT   path to a source checkout (development)
 ///   SAYSO_ACCOUNT   Sayso account profile
 @MainActor
 final class BridgeProcess {
