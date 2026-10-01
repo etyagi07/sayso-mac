@@ -122,6 +122,14 @@ OPTION_FILLER = {"a", "an", "the", "of", "on", "in", "for", "at", "@", "it",
                  "contract", "strike", "all", "lot", "lots", "atm", "weekly"}
 # Things said as the part after "sorry" / "make it": a detail, nothing more.
 DETAIL_FILLER = {"a", "an", "the", "it", "that", "one", "lot", "lots", "of"}
+# Said before buy or sell without changing the order: "I want to buy...",
+# "can you sell...". Anything else there is asked about - ignoring it turned
+# "tell me whether to sell reliance" into selling all of it.
+ORDER_LEAD = {"i", "i'd", "id", "i'll", "ill", "want", "wanna", "would",
+              "like", "to", "can", "you", "just", "go", "ahead", "and",
+              "let's", "lets", "let", "us", "kindly", "ok", "okay", "so",
+              "yeah", "now", "then", "also", "alright", "right", "well",
+              "hey", "the", "quickly"}
 
 
 def _slots(text):
@@ -515,6 +523,10 @@ def _parse_one(transcript):
         words = t.split()
         verb_at = next(i for i, w in enumerate(words)
                        if re.fullmatch(rf"{BUY_WORDS}|{SELL_WORDS}", w))
+        lead = [w for w in words[:verb_at] if w not in ORDER_LEAD]
+        if lead:
+            return {"intent": "not_followed", "heard": " ".join(lead),
+                    "kind": "order"}
         rest = words[verb_at + 1:]
 
         price = None

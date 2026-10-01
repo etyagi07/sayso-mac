@@ -122,6 +122,12 @@ WORKS = [
     ("Buy one.", {"intent": "number_answer", "side": "B"}),
     ("Buy one YESBANK. No, buy two YESBANK.",
      {"intent": "order", "quantity": 2, "name": "yesbank"}),
+    # polite framing before the verb changes nothing
+    ("I want to buy one yes bank intraday",
+     {"intent": "order", "side": "B", "quantity": 1, "name": "yesbank",
+      "product": "I"}),
+    ("can you sell ten infosys", {"intent": "order", "side": "S",
+                                  "quantity": 10}),
     # --- information -----------------------------------------------------------
     ("what is yes bank at", {"intent": "quote", "name": "yesbank"}),
     ("what's the price of yes bank", {"intent": "quote",
@@ -179,6 +185,10 @@ REFUSED = [
     ("buy two fifty yes bank", "number_unclear"),
     ("buy one zero zero yes bank", "number_unclear"),
     ("buy nifty 23100s call", "number_unclear"),
+    # words before the verb with no job: found in review (2026-10-01),
+    # where the first one opened a card to sell all of it
+    ("tell me whether to sell reliance", "not_followed"),
+    ("maybe buy one yes bank", "not_followed"),
     # "bye" and "by" that aren't buy
     ("Bye. Nifty call.", None),
     ("By the way, nifty call is up", None),
