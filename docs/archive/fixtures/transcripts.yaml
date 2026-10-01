@@ -1,0 +1,362 @@
+# SUPERSEDED — archived 2026-09-29. Not current; written for ProjectZero's
+# abandoned staged-order model. The engine is sayso/. Do not use.
+
+# ⚠ SUPERSEDED for the options path — see tests/fixtures/staged_commands.yaml
+#
+# These cases describe the VOICE-COMPOSES-THE-WHOLE-ORDER model, now in
+# docs/archive/03-command-grammar.md and docs/archive/04-resolution.md, where
+# the symbol, quantity and product were all spoken. The options flow takes
+# those from the UI (docs/02-flow.md), so nothing here is currently executed
+# by the test suite. The live fixtures are tests/fixtures/staged_commands.yaml.
+#
+# Kept, not deleted, for two reasons:
+#   1. The equity/cash path may still be built on this model.
+#   2. Six cases in here are internally inconsistent with docs/archive/03-command-grammar.md and the risk
+#      limits, and that analysis is worth preserving rather than re-deriving:
+#        - nifty_alone            : `sell` when flat should reject (sell never
+#                                   flips to short), but expects an intent
+#        - mangled_filler_heavy   : contains "yeah"/"so", not in filler_words,
+#                                   so the unknown-token rule should reject it
+#        - qty_over_symbol_max_clamps, challenge_answered_with_other_option,
+#          nifty_alone, banknifty_longest_alias_wins
+#                                 : all four breach max_notional_per_order
+#                                   (₹2L) while expecting a valid intent
+#   Resolve these before reviving this file. CLAUDE.md rule 17 (the golden file
+#   only grows) still applies to it.
+
+# Golden test fixtures for core/resolve.py
+#
+# This file ONLY GROWS (CLAUDE.md rule 17). Every behavioural change to
+# normalization, grammar or resolution adds cases here.
+#
+# The hard gate for M1: ZERO cases may resolve to the WRONG instrument.
+# Rejecting is always acceptable. Guessing is never acceptable.
+#
+# `expect` is one of: intent | challenge | reject
+# `world` sets up injected state (positions, ltps). Defaults below.
+
+defaults:
+  world:
+    ltps:
+      HDFCBANK: 1961.20
+      HDFCLIFE: 712.40
+      HDFCAMC: 4180.00
+      RELIANCE: 1402.50
+      TCS: 3895.00
+      INFY: 1588.75
+      TATAMOTORS: 690.30
+      TATASTEEL: 148.10
+      NIFTY: 24880.00
+      BANKNIFTY: 53120.00
+    ltp_age_ms: 200
+    positions: {}          # flat unless a case says otherwise
+
+cases:
+
+  # ══ Clean, unambiguous ═══════════════════════════════════════════════════
+  - id: clean_short_full_name
+    transcript: "short hdfc bank forty"
+    expect: intent
+    intent:
+      side: SHORT
+      symbol_key: HDFCBANK
+      tsym: HDFCBANK-EQ
+      quantity: 40
+      quantity_provenance: spoken
+      product: MIS
+      product_provenance: inferred
+      price_type: PROT
+
+  - id: clean_buy_default_qty
+    transcript: "buy reliance"
+    expect: intent
+    intent:
+      side: BUY
+      symbol_key: RELIANCE
+      quantity: 50
+      quantity_provenance: inferred
+      product: MIS
+
+  - id: clean_limit
+    transcript: "buy tcs at 3900"
+    expect: intent
+    intent:
+      side: BUY
+      symbol_key: TCS
+      quantity: 25
+      price_type: LIMIT
+      price: 3900
+
+  - id: clean_explicit_delivery
+    transcript: "buy infosys sixty delivery"
+    expect: intent
+    intent:
+      side: BUY
+      symbol_key: INFY
+      quantity: 60
+      product: CNC
+      product_provenance: spoken
+
+  # ══ Ambiguity — must ALWAYS challenge, regardless of score ═══════════════
+  - id: ambiguous_bare_hdfc
+    transcript: "short hdfc"
+    expect: challenge
+    challenge:
+      reason: ambiguous_alias
+      options: [bank, life, asset]
+
+  - id: ambiguous_bare_hdfc_with_qty
+    transcript: "short hdfc forty"
+    expect: challenge
+    challenge:
+      reason: ambiguous_alias
+
+  - id: ambiguous_bare_tata
+    transcript: "buy tata two hundred"
+    expect: challenge
+    challenge:
+      reason: ambiguous_alias
+      options: [motors, steel]
+
+  - id: challenge_answered_correctly
+    transcript: "short hdfc"
+    then_challenge_answer: "bank"
+    expect: intent
+    intent:
+      side: SHORT
+      symbol_key: HDFCBANK
+      quantity: 40
+
+  - id: challenge_answered_with_other_option
+    transcript: "short hdfc"
+    then_challenge_answer: "life"
+    expect: intent
+    intent:
+      side: SHORT
+      symbol_key: HDFCLIFE
+      quantity: 300
+
+  - id: challenge_answered_wrongly_cancels
+    transcript: "short hdfc"
+    then_challenge_answer: "yes"
+    expect: reject
+    reject:
+      reason: challenge_no_match
+
+  # ══ Substring collision: "nifty" inside "bank nifty" ═════════════════════
+  - id: banknifty_longest_alias_wins
+    transcript: "buy bank nifty one lot"
+    expect: intent
+    intent:
+      symbol_key: BANKNIFTY
+      lots: 1
+      quantity: 35
+      product: NRML
+
+  - id: nifty_alone
+    transcript: "sell nifty two lots"
+    expect: intent
+    intent:
+      symbol_key: NIFTY
+      lots: 2
+      quantity: 150
+
+  # ══ Mangled ASR — must resolve correctly OR reject, never mis-resolve ════
+  - id: mangled_spelled_letters_spaces
+    transcript: "short h d f c bank"
+    expect: challenge          # letter-run collapses to "hdfc bank" -> unambiguous
+    note: >
+      If letter-run collapsing works this should be `intent` for HDFCBANK.
+      Written as challenge deliberately so the implementer has to decide and
+      document which one it is. Pick one, fix this fixture, and add a comment.
+
+  - id: mangled_shot_for_short
+    transcript: "shot hdfc bank forty"
+    expect: intent
+    intent:
+      side: SHORT
+      symbol_key: HDFCBANK
+    note: "'shot' -> 'short' comes from settings.asr_corrections, not from fuzzy matching"
+
+  - id: mangled_sort_for_short_rejects_by_default
+    transcript: "sort hdfc bank forty"
+    expect: reject
+    reject:
+      reason: unknown_token
+    note: "Deliberately NOT corrected by default. Only add if seen in real logs."
+
+  - id: mangled_digits_split
+    transcript: "buy tcs 2 5"
+    expect: intent
+    intent:
+      symbol_key: TCS
+      quantity: 25
+
+  - id: mangled_filler_heavy
+    transcript: "uh yeah okay so just short me some reliance please"
+    expect: intent
+    intent:
+      side: SHORT
+      symbol_key: RELIANCE
+      quantity: 50
+      quantity_provenance: inferred
+
+  - id: mangled_number_words
+    transcript: "buy tata steel four hundred"
+    expect: intent
+    intent:
+      symbol_key: TATASTEEL
+      quantity: 400
+
+  - id: mangled_unknown_symbol
+    transcript: "buy wipro fifty"
+    expect: reject
+    reject:
+      reason: symbol_not_in_watchlist
+    note: "No fallback to the exchange symbol master. CLAUDE.md rule 12."
+
+  - id: mangled_gibberish
+    transcript: "buy hfdlkc bank"
+    expect: reject
+    reject:
+      reason: low_score
+
+  # ══ Position-dependent semantics ═════════════════════════════════════════
+  - id: sell_when_flat_rejects
+    transcript: "sell reliance"
+    world:
+      positions: {}
+    expect: reject
+    reject:
+      reason: no_position_to_reduce
+    note: "sell NEVER flips to short"
+
+  - id: sell_clamps_to_position
+    transcript: "sell reliance"
+    world:
+      positions: {RELIANCE: 20}
+    expect: intent
+    intent:
+      side: SELL
+      quantity: 20
+      quantity_provenance: clamped
+    note: "default_qty is 50; position is 20; clamp and mark it"
+
+  - id: cover_when_flat_rejects
+    transcript: "cover hdfc bank"
+    world:
+      positions: {}
+    expect: reject
+    reject:
+      reason: no_position_to_reduce
+
+  - id: exit_uses_full_position
+    transcript: "exit tcs"
+    world:
+      positions: {TCS: -15}
+    expect: intent
+    intent:
+      side: EXIT
+      quantity: 15
+      quantity_provenance: computed
+
+  - id: exit_with_qty_rejects
+    transcript: "exit tcs fifty"
+    world:
+      positions: {TCS: -15}
+    expect: reject
+    reject:
+      reason: qty_not_allowed_for_exit
+
+  - id: half_of_position
+    transcript: "sell infosys half"
+    world:
+      positions: {INFY: 120}
+    expect: intent
+    intent:
+      quantity: 60
+      quantity_provenance: computed
+
+  - id: half_when_flat_rejects
+    transcript: "sell infosys half"
+    world:
+      positions: {}
+    expect: reject
+    reject:
+      reason: no_position_to_reduce
+
+  # ══ Grammar violations ═══════════════════════════════════════════════════
+  - id: wrong_word_order
+    transcript: "buy two lots nifty"
+    expect: reject
+    reject:
+      reason: parse_error
+    note: "Word order is fixed: verb symbol qty product price"
+
+  - id: conditional_order_rejected
+    transcript: "short reliance if it breaks 1400"
+    expect: reject
+    reject:
+      reason: unknown_token
+    note: "Out of scope forever. CLAUDE.md rule 11."
+
+  - id: no_verb
+    transcript: "hdfc bank forty"
+    expect: reject
+    reject:
+      reason: parse_error
+
+  - id: two_symbols
+    transcript: "buy tcs and infosys"
+    expect: reject
+    reject:
+      reason: parse_error
+
+  # ══ Risk and sanity ══════════════════════════════════════════════════════
+  - id: limit_far_from_ltp_rejects
+    transcript: "buy tcs at 390"
+    expect: reject
+    reject:
+      reason: limit_sanity
+    note: "3895 LTP; 390 is a decimal-place error, not a price"
+
+  - id: notional_over_hard_cap_rejects
+    transcript: "buy hdfc bank one thousand"
+    expect: reject
+    reject:
+      reason: max_notional_per_order
+
+  - id: qty_over_symbol_max_clamps
+    transcript: "buy tcs two hundred"
+    expect: intent
+    intent:
+      quantity: 100
+      quantity_provenance: clamped
+    note: "TCS max_qty is 100"
+
+  - id: stale_quote_rejects_protected_market
+    transcript: "buy reliance"
+    world:
+      ltp_age_ms: 9000
+    expect: reject
+    reject:
+      reason: stale_quote
+
+  - id: stale_quote_allows_explicit_limit
+    transcript: "buy reliance at 1400"
+    world:
+      ltp_age_ms: 9000
+    expect: intent
+    intent:
+      price_type: LIMIT
+      price: 1400
+    note: "Notional shown as stale in the readback, but the order is valid"
+
+  # ══ ASR disagreement demotes the band ════════════════════════════════════
+  - id: disagreement_demotes_resolved_to_challenge
+    transcript: "short hdfc bank forty"
+    asr_agreement: false
+    expect: challenge
+    challenge:
+      reason: asr_disagreement
+    note: "Would be RESOLVED on agreement. See docs/06-voice-and-ui.md policy step 3."

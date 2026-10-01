@@ -1,0 +1,147 @@
+"""Text-mode agent. Same pipeline the voice layer will use, minus the mic.
+
+Run:  .venv/bin/python -m voice.cli
+"""
+
+from shoonya import profile
+
+profile.from_argv()
+
+from voice import safety, speak
+from voice.agent import LARGE_ORDER, handle, reprice
+
+G, R, Y, B, DIM, X = ("\033[92m", "\033[91m", "\033[93m",
+                      "\033[94m", "\033[2m", "\033[0m")
+
+
+def limits_line(s=None):
+    """The equity half of the startup banner. One copy, used by both the
+    voice and text modes, so a renamed field cannot break only one of them."""
+    s = s or safety.status()
+    return (f"{DIM}  equity : {s['stocks']} stocks · up to "
+            f"{s['max_order_value']:,.0f}/order · all at market{X}")
+
+
+def confirm(preview):
+    """Show the order and take a decision.
+
+    Orders are priced at market by default. `p` sets an explicit limit
+    instead - the screen is where prices get changed, because a number
+    said out loud is the least reliable part of a spoken command.
+    May edit `preview` in place; the caller reads the price back.
+    """
+    speak.say(preview.get("say") or preview.get("spoken"))
+    while True:
+        _draw(preview)
+        choice = input(f"  {G}y{X} send · {G}p{X} set price · "
+                       f"anything else cancels: ").strip().lower()
+        # A key was pressed - the rest of the readback is now in the way.
+        speak.interrupt()
+        if choice == "y":
+            return True
+        if choice != "p":
+            return False
+        if not _set_price(preview):
+            return False
+
+
+def _draw(preview):
+    depth = ""
+    if preview.get("bid") and preview.get("ask"):
+        depth = f"   (bid {preview['bid']:.2f} / ask {preview['ask']:.2f})"
+    print(f"\n{Y}┌─ CONFIRM ─────────────────────────────────{X}")
+    print(f"{Y}│{X}  {preview['action']}  {preview['quantity']} x {preview['symbol']}")
+    if preview.get("company"):
+        print(f"{Y}│{X}  {B}{preview['company']}{X}")
+    if preview.get("lots"):
+        lots = preview["lots"]
+        per_lot = int(preview["quantity"] / lots) if lots else 0
+        # Spell out the arithmetic. A misheard "twenty two" instead of
+        # "two" is obvious as a lot count long before it is obvious as a
+        # rupee total.
+        emphasis = R if lots > 1 else X
+        print(f"{Y}│{X}  {emphasis}{lots} lot{'s' if lots != 1 else ''}{X}"
+              f" x {per_lot} = {preview['quantity']} units{depth}")
+    if preview.get("pnl") is not None:
+        colour = G if preview["pnl"] >= 0 else R
+        sign = "+" if preview["pnl"] >= 0 else ""
+        print(f"{Y}│{X}  entry      {preview.get('entry', 0):.2f}"
+              f"   now {preview.get('ltp', 0):.2f}"
+              f"   {colour}{sign}{preview['pnl']:,.2f}{X}")
+    if preview.get("expiry"):
+        print(f"{Y}│{X}  {B}expiry     {preview['expiry']}{X}"
+              f"   {DIM}strike {preview.get('strike','')}{X}")
+    how = "at market" if preview.get("at_market") else "limit"
+    print(f"{Y}│{X}  {how:<10} {preview['price']:.2f}"
+          f"{'' if preview.get('lots') else depth}")
+    big = preview["value"] >= LARGE_ORDER
+    money = R if big else B
+    print(f"{Y}│{X}  {money}total    {preview['value']:,.2f} rupees{X}"
+          f"{'   <<< LARGE ORDER' if big else ''}")
+    if preview.get("spoken_price"):
+        print(f"{Y}│{X}  {DIM}heard \"{preview['spoken_price']:.2f}\" - "
+              f"press p to use it{X}")
+    print(f"{Y}└───────────────────────────────────────────{X}")
+
+
+def _set_price(preview):
+    """Take a limit price from the keyboard, validated before it is used."""
+    default = preview.get("spoken_price")
+    hint = f" [{default:.2f}]" if default else ""
+    raw = input(f"  limit price{hint}: ").strip()
+    if not raw and default:
+        raw = str(default)
+    if not raw:
+        return False
+    try:
+        price = float(raw)
+    except ValueError:
+        print(f"  {R}'{raw}' is not a price.{X}")
+        return True
+
+    tick = preview.get("tick") or 0.05
+    price = round(round(price / tick) * tick, 2)
+    low, high = preview.get("lower_circuit"), preview.get("upper_circuit")
+    if low and price < low:
+        print(f"  {R}{price:.2f} is below the lower circuit {low:.2f}.{X}")
+        return True
+    if high and price > high:
+        print(f"  {R}{price:.2f} is above the upper circuit {high:.2f}.{X}")
+        return True
+
+    reprice(preview, price)
+    return True
+
+
+def main():
+    s = safety.status()
+    print(f"\n{G}● LISTENING{X} {DIM}(text mode){X}")
+    caps = " · ".join(f"{n} {c} lots" for n, c in s["max_lots"].items())
+    print(f"{DIM}  options: {caps}{X}")
+    print(limits_line(s))
+    print(f"{DIM}  try: 'what is the nifty call at' · 'buy sensex put' · "
+          f"'what is reliance at' · 'funds' · ctrl-c to quit{X}\n")
+
+    while True:
+        try:
+            said = input(f"{G}▶{X} ").strip()
+        except (EOFError, KeyboardInterrupt):
+            print(f"\n{DIM}○ stopped{X}")
+            return
+        if not said:
+            continue
+        if said in ("quit", "exit"):
+            print(f"{DIM}○ stopped{X}")
+            return
+        try:
+            result = handle(said, confirm=confirm)
+        except Exception as e:
+            print(f"  {R}error: {type(e).__name__}: {e}{X}")
+            continue
+        colour = R if result.get("blocked") else X
+        print(f"  {colour}{result['speak']}{X}")
+        speak.announce(result)
+
+
+if __name__ == "__main__":
+    main()

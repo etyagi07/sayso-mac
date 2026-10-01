@@ -1,0 +1,112 @@
+# SUPERSEDED — archived 2026-09-29. Not current; written for ProjectZero's
+# abandoned staged-order model. The engine is sayso/. Do not use.
+
+# settings.yaml — everything tunable.
+# Copy to settings.yaml (gitignored) and edit.
+#
+# Every number here is a STARTING POINT. Tune from logs, not from intuition.
+
+version: 1
+
+mode: paper                 # paper | live — live ALSO requires session-level arming
+
+engine:
+  host: 127.0.0.1
+  port: 8787
+
+hotkeys:
+  talk: "cmd+shift+space"   # push-to-talk (hold)
+  talk_mode: hold           # hold | toggle
+  commit: "space"           # captured ONLY while the gate is open
+  cancel: "esc"
+  cancel_all: "cmd+shift+."
+  zero_out: "cmd+shift+/"
+
+audio:
+  sample_rate: 16000
+  preroll_ms: 300
+  min_utterance_ms: 400
+  max_utterance_ms: 6000
+  vad: webrtcvad            # webrtcvad | silero
+  vad_aggressiveness: 2
+  save_wav: true            # keep per-command audio for alias tuning
+
+asr:
+  cloud_enabled: true
+  local:
+    model: small.en         # distil-small.en | small.en | base.en
+    compute_type: int8
+    prime_on_start: true
+  cloud:
+    model: whisper-large-v3-turbo
+    base_url: https://api.groq.com/openai/v1
+    timeout_ms: 1500
+  race:
+    prefer_cloud_window_ms: 400
+    total_budget_ms: 1800
+    demote_band_on_disagreement: true
+
+normalize:
+  filler_words: [uh, um, er, like, please, okay, ok, hey, now, just, some,
+                 me, a, an, the, of, for, do, can, you, i, want, to, gonna]
+  # Grows from OBSERVED errors in your own logs. Never from imagination.
+  asr_corrections:
+    shot: short
+    sale: sell
+    # sort: short        # enable only if you actually see it in logs
+
+resolution:
+  accept_score: 92
+  accept_margin: 8
+  challenge_score: 75
+  # below challenge_score -> reject
+  max_quote_age_ms: 5000
+
+confirmation:
+  gate_timeout_ms: 6000
+  challenge_timeout_ms: 4000
+  hold_to_commit_ms: 800
+  high_exposure_multiple: 1.5      # × rolling median notional of last 50
+  allow_voice_confirm: false       # UNSAFE — defeats channel separation
+  read_floor_ms: 700               # calibrate once, deliberately
+
+risk:
+  max_notional_per_order: 200000
+  max_notional_soft: 100000        # above this -> hold-to-commit
+  max_orders_per_day: 40
+  max_orders_per_minute: 6
+  reject_cooloff:
+    rejects: 3
+    window_s: 60
+    lockout_s: 120
+  limit_sanity_pct: 5.0
+  session_hours:
+    tz: Asia/Kolkata
+    open: "09:15"
+    close: "15:30"
+    weekdays_only: true
+
+execution:
+  default_product: MIS
+  default_retention: DAY
+  protection_pct_cash: 0.5
+  protection_pct_futures: 1.0
+  allow_protected_market_options: false   # spreads are too wide; use limits
+  reconcile_timeout_ms: 5000
+  reconcile_poll_ms: 250
+  position_poll_ms: 2000
+
+broker:
+  name: shoonya             # shoonya | paper
+  # credentials come from .env, never from here
+
+paper:
+  latency_ms_mean: 120
+  latency_ms_stddev: 40
+  reject_rate: 0.0          # raise for chaos testing
+  partial_fill_rate: 0.0
+  lost_response_rate: 0.0
+
+logging:
+  dir: ./logs
+  level: INFO

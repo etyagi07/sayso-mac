@@ -1,0 +1,1074 @@
+"""The agent layer, against a fake broker.
+
+This is where the bugs that matter live: being told an order is pending when
+none was sent, a confirmed symbol being swapped for another, an edited price
+being ignored, an expired session reading as an empty account. Each test
+below is one of those, found in review and kept here so it cannot return.
+
+Runs offline - nothing here touches the network or the real daily counters.
+"""
+
+import sys
+import tempfile
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+import _isolated  # noqa: E402,F401  (state in a temp folder, never the live one)
+
+import shoonya.broker as b  # noqa: E402
+from datetime import date, datetime  # noqa: E402
+from shoonya import instruments as ins  # noqa: E402
+from voice import agent, safety  # noqa: E402
+
+# A tiny offline stand-in for the symbol masters. Note the SENSEX symbol:
+# BSE puts CE/PE at the end, so anything pattern-matching NIFTY's layout
+# would never recognise it.
+CONTRACTS = {
+    "NIFTY29SEP26C23100": ("NIFTY", "CE", 23100, "NFO", "73906"),
+    "NIFTY29SEP26C23150": ("NIFTY", "CE", 23150, "NFO", "73908"),
+    "NIFTY29SEP26P23100": ("NIFTY", "PE", 23100, "NFO", "73907"),
+    "BANKNIFTY29SEP26C55600": ("BANKNIFTY", "CE", 55600, "NFO", "69779"),
+    "SENSEX26O0173900CE": ("SENSEX", "CE", 73900, "BFO", "886639"),
+    "NIFTY29SEP26C24000": ("NIFTY", "CE", 24000, "NFO", "73999"),
+    "NIFTY06OCT26C23100": ("NIFTY", "CE", 23100, "NFO", "74100",
+                           date(2026, 10, 6)),
+}
+
+
+def fake_contract_for(tsym):
+    if tsym not in CONTRACTS:
+        return None
+    u, ot, k, exch, tok, *expiry = CONTRACTS[tsym]
+    return {"tsym": tsym, "underlying": u, "option_type": ot, "strike": k,
+            "exchange": exch, "token": tok, "lot": 65,
+            "expiry": expiry[0] if expiry else date(2026, 9, 29)}
+
+
+def pos(tsym, qty, avg=100.0):
+    return {"symbol": tsym, "qty": qty, "avg_price": avg, "ltp": avg + 1,
+            "prd": "M"}
+
+# Captured before any test swaps it for a fake.
+REAL_POSITIONS = b.positions
+
+YES = lambda p: True  # noqa: E731
+NO = lambda p: False  # noqa: E731
+
+QUOTE = {"stat": "Ok", "lp": "22.44", "bp1": "22.43", "sp1": "22.45",
+         "ti": "0.01", "lc": "20.00", "uc": "25.00", "tsym": "YESBANK-EQ",
+         "token": "11915"}
+
+
+class Fake:
+    """Replaces the broker functions the agent calls, and records sends."""
+
+    def __init__(self, **over):
+        self.sent = []
+        self.saved = {}
+        self.over = over
+
+    def __enter__(self):
+        state = tempfile.NamedTemporaryFile(suffix=".json", delete=False)
+        self.saved["state"] = (safety.STATE_FILE, dict(safety._spent_today))
+        safety.STATE_FILE = Path(state.name)
+        safety._spent_today.clear()
+        safety._spent_today.update(safety._blank())
+
+        defaults = {
+            "quote_checked": lambda *a, **k: dict(QUOTE),
+            "positions": lambda include_closed=False: [],
+            "order_book": lambda: [],
+            "place": self._place,
+            "wait_for_outcome": lambda order_no, **k: {
+                "order_no": order_no, "status": "COMPLETE", "final": True,
+                "quantity": 1, "filled": 1, "avg_fill_price": 22.45},
+        }
+        defaults.update(self.over)
+        for name, fn in defaults.items():
+            self.saved[name] = getattr(b, name)
+            setattr(b, name, fn)
+        self.saved["_contract_for"] = ins.contract_for
+        ins.contract_for = fake_contract_for
+        # Expiries from the same offline contracts: nothing downloads a master.
+        self.saved["_expiries"] = ins.expiries
+        ins.expiries = lambda name="NIFTY", now=None: sorted(
+            {fake_contract_for(t)["expiry"] for t, row in CONTRACTS.items() if row[0] == name})
+        agent._pending = None
+        return self
+
+    def _place(self, side, tsym, quantity, price, exchange, product):
+        self.sent.append({"side": side, "tsym": tsym, "qty": quantity,
+                          "price": price, "exchange": exchange,
+                          "product": product})
+        return {"status": "ACCEPTED", "order_no": "ORD1", "tag": "t"}
+
+    def __exit__(self, *exc):
+        ins.contract_for = self.saved.pop("_contract_for")
+        ins.expiries = self.saved.pop("_expiries")
+        agent._pending = None
+        path, counters = self.saved.pop("state")
+        safety.STATE_FILE = path
+        safety._spent_today.clear()
+        safety._spent_today.update(counters)
+        for name, fn in self.saved.items():
+            setattr(b, name, fn)
+
+
+def orders_counted():
+    return safety.status()["orders_today"]
+
+
+# --- being told the truth ------------------------------------------------
+
+def test_rejection_is_reported_as_rejection():
+    # Regression: an error after confirmation was reported as "Order is
+    # pending, not filled yet" while nothing had been sent.
+    with Fake(place=lambda *a: {"status": "REJECTED",
+                                "reason": "Insufficient margin"}):
+        r = agent.handle("buy one yesbank intraday", YES)
+        assert r["outcome"] == "rejected"
+        assert "pending" not in r["speak"].lower()
+        assert "Insufficient margin" in r["speak"]
+        assert orders_counted() == 0
+
+
+def test_lost_reply_is_not_called_a_rejection():
+    # A dropped connection does not mean the broker refused. Saying
+    # "rejected" invites a retry and a doubled position.
+    with Fake(place=lambda *a: {"status": "UNKNOWN", "reason": "timeout"}):
+        r = agent.handle("buy one yesbank intraday", YES)
+        assert r["outcome"] == "unknown"
+        assert "rejected" not in r["speak"].lower()
+        assert "order book" in r["speak"].lower()
+        assert orders_counted() == 1, "possibly live - must count"
+
+
+def test_exchange_rejection_after_acceptance_is_not_counted():
+    with Fake(wait_for_outcome=lambda n, **k: {
+            "status": "REJECTED", "final": True, "reason": "Circuit limit"}):
+        r = agent.handle("buy one yesbank intraday", YES)
+        assert r["outcome"] == "rejected"
+        assert "Circuit limit" in r["speak"]
+        assert orders_counted() == 0
+
+
+def test_resting_order_says_resting():
+    with Fake(wait_for_outcome=lambda n, **k: {
+            "status": "OPEN", "final": False, "quantity": 1, "filled": 0}):
+        r = agent.handle("buy one yesbank intraday", YES)
+        assert r["outcome"] == "resting"
+        assert "not filled" in r["speak"]
+
+
+def test_partial_fill_says_partial():
+    with Fake(wait_for_outcome=lambda n, **k: {
+            "status": "OPEN", "final": False, "quantity": 4, "filled": 1,
+            "avg_fill_price": 22.45}):
+        r = agent.handle("buy four yesbank intraday", YES)
+        assert r["outcome"] == "partial"
+        assert "1 of 4" in r["speak"]
+
+
+def broker_says(reply):
+    """The real position book, with the broker's HTTP reply stubbed."""
+    return {"positions": REAL_POSITIONS, "_ids": lambda: ("U1", "U1"),
+            "_raw_post": lambda path, values: dict(reply)}
+
+
+def test_expired_session_is_not_an_empty_account():
+    # Regression: the broker answers "no data" and "session expired" with
+    # the same status, and both used to read as "you have no positions".
+    # Goes through the real book reader - that is where they are told apart.
+    expired = {"stat": "Not_Ok", "emsg": "Session Expired :  Invalid Session Key"}
+    with Fake(**broker_says(expired)):
+        for said in ("what do i own", "exit call", "sell my yesbank"):
+            r = agent.handle(said, YES)
+            assert r.get("broker_error"), said
+            assert "no open" not in r["speak"].lower(), said
+            assert "don't hold" not in r["speak"].lower(), said
+    # ...while a genuinely empty book still reads as empty.
+    with Fake(**broker_says({"stat": "Not_Ok", "emsg": "no data"})):
+        r = agent.handle("what do i own", YES)
+        assert r["speak"] == "You have no open positions.", r["speak"]
+
+
+# --- sending what was confirmed ------------------------------------------
+
+def test_confirmed_symbol_is_the_one_sent():
+    # Regression: after confirmation the symbol was searched for again, and
+    # names were found by prefix search - which is how "idea" became
+    # IDEAFORGE. Stocks now come from a known list; the broker is never
+    # searched, and what was confirmed is exactly what is sent.
+    calls = []
+    shown = {}
+    with Fake(_raw_post=lambda path, values: calls.append(path) or {}) as f:
+        agent.handle("buy one yesbank intraday",
+                     lambda p: (shown.update(p), True)[1])
+        assert "/SearchScrip" not in calls, "searched the broker for a name"
+        assert f.sent[0]["tsym"] == shown["symbol"] == "YESBANK-EQ"
+
+
+def test_edited_price_is_sent_on_exit():
+    # Regression: pressing p on an exit changed the screen, not the order.
+    held = [{"symbol": "NIFTY29SEP26C23100", "qty": 65, "avg_price": 100.0,
+             "ltp": 101.0, "prd": "M"}]
+    opt_quote = {"stat": "Ok", "lp": "101.00", "bp1": "100.90",
+                 "sp1": "101.10", "ti": "0.05", "lc": "0.05", "uc": "500",
+                 "tsym": "NIFTY29SEP26C23100", "token": "73906"}
+
+    def edit(preview):
+        preview["price"] = 105.00
+        return True
+
+    with Fake(positions=lambda include_closed=False: held,
+              quote_checked=lambda *a, **k: dict(opt_quote)) as f:
+        agent.handle("exit call", edit)
+        assert f.sent, "nothing was sent"
+        assert f.sent[0]["price"] == 105.00, f.sent[0]
+
+
+def test_edited_price_is_sent_on_buys():
+    # The exit case above had a test; buys did not.
+    def edit(preview):
+        preview["price"] = 22.60
+        return True
+    with Fake() as f:
+        agent.handle("buy one yesbank intraday", edit)
+        assert f.sent and f.sent[0]["price"] == 22.60, f.sent
+
+    def edit_option(preview):
+        preview["price"] = 90.00
+        return True
+    saved = agent._ladder_and_spot
+    agent._ladder_and_spot = lambda name: (LADDER, 23047.0, date(2026, 9, 29))
+    try:
+        with Fake(option_contract=fake_option_contract) as f:
+            agent.handle("buy nifty call", edit_option)
+            assert f.sent and f.sent[0]["price"] == 90.00, f.sent
+    finally:
+        agent._ladder_and_spot = saved
+
+
+def test_unchecked_quote_never_prices_an_order():
+    # Regression: the equity confirm box priced off a raw quote, which the
+    # broker sometimes returns for the wrong instrument.
+    with Fake(quote_checked=lambda *a, **k: None) as f:
+        r = agent.handle("buy one yesbank intraday", YES)
+        assert r.get("blocked")
+        assert not f.sent
+
+
+# --- exits are never trapped ---------------------------------------------
+
+def test_equity_exit_is_not_blocked_by_the_size_cap():
+    # Regression: a sell to close went through the order-size cap, so a
+    # position could be impossible to exit by voice. 900 shares is over
+    # the per-order value cap - smaller, and this proves nothing.
+    held = [{"symbol": "YESBANK-EQ", "qty": 900, "avg_price": 22.0,
+             "ltp": 22.44, "prd": "C"}]
+    assert 900 * 22.4 > safety.LIMITS.max_order_value
+    with Fake(positions=lambda include_closed=False: held) as f:
+        r = agent.handle("sell my yesbank", YES)
+        assert not r.get("blocked"), r["speak"]
+        assert f.sent[0]["qty"] == 900
+        assert f.sent[0]["side"] == "S"
+        assert orders_counted() == 0, "exits do not use up the allowance"
+
+
+def test_cannot_sell_more_than_held():
+    held = [{"symbol": "YESBANK-EQ", "qty": 2, "avg_price": 22.0,
+             "ltp": 22.44, "prd": "C"}]
+    with Fake(positions=lambda include_closed=False: held) as f:
+        r = agent.handle("sell five yesbank", YES)
+        assert r.get("blocked")
+        assert not f.sent
+
+
+def test_exit_asks_when_two_positions_match():
+    # Regression: with two calls open, "exit call" closed whichever came
+    # first.
+    held = [{"symbol": "NIFTY29SEP26C23100", "qty": 65, "avg_price": 100.0,
+             "ltp": 101.0, "prd": "M"},
+            {"symbol": "NIFTY29SEP26C23150", "qty": 130, "avg_price": 70.0,
+             "ltp": 71.0, "prd": "M"}]
+    with Fake(positions=lambda include_closed=False: held) as f:
+        r = agent.handle("exit call", YES)
+        assert r.get("needs_answer") == "strike", r["speak"]
+        assert not f.sent
+
+
+def test_declining_sends_nothing():
+    with Fake() as f:
+        r = agent.handle("buy one yesbank intraday", NO)
+        assert r["speak"] == "Cancelled."
+        assert not f.sent
+        assert orders_counted() == 0
+
+
+# --- indices ------------------------------------------------------------
+
+def test_exit_recognises_a_sensex_position():
+    # SENSEX symbols end in CE/PE. The old pattern-match only understood
+    # NIFTY's layout and would have said "no open call position".
+    held = [pos("SENSEX26O0173900CE", 20, 540.0)]
+    with Fake(positions=lambda include_closed=False: held) as f:
+        agent.handle("exit call", YES)
+        assert f.sent and f.sent[0]["tsym"] == "SENSEX26O0173900CE"
+        assert f.sent[0]["exchange"] == "BFO", f.sent[0]
+
+
+def test_exit_across_indices_asks_which_index():
+    held = [pos("NIFTY29SEP26C23100", 65), pos("SENSEX26O0173900CE", 20)]
+    with Fake(positions=lambda include_closed=False: held) as f:
+        r = agent.handle("exit call", YES)
+        assert r.get("needs_answer") == "underlying", r["speak"]
+        assert not f.sent
+        # Answering with just the index finishes the exit.
+        agent.handle("sensex", YES)
+        assert f.sent and f.sent[0]["tsym"] == "SENSEX26O0173900CE"
+
+
+def test_named_index_narrows_the_exit():
+    held = [pos("NIFTY29SEP26C23100", 65), pos("BANKNIFTY29SEP26C55600", 30)]
+    with Fake(positions=lambda include_closed=False: held) as f:
+        agent.handle("exit the bank nifty call", YES)
+        assert f.sent and f.sent[0]["tsym"] == "BANKNIFTY29SEP26C55600"
+
+
+def test_named_strike_narrows_the_exit():
+    held = [pos("NIFTY29SEP26C23100", 65), pos("NIFTY29SEP26C23150", 65)]
+    with Fake(positions=lambda include_closed=False: held) as f:
+        agent.handle("exit the 23150 call", YES)
+        assert f.sent and f.sent[0]["tsym"] == "NIFTY29SEP26C23150"
+
+
+def test_same_index_two_strikes_asks_which_strike():
+    held = [pos("NIFTY29SEP26C23100", 65), pos("NIFTY29SEP26C23150", 65)]
+    with Fake(positions=lambda include_closed=False: held) as f:
+        r = agent.handle("exit nifty call", YES)
+        assert r.get("needs_answer") == "strike", r["speak"]
+        agent.handle("twenty three one hundred", YES)
+        assert f.sent and f.sent[0]["tsym"] == "NIFTY29SEP26C23100"
+
+
+def test_no_index_named_asks_before_anything_else():
+    with Fake() as f:
+        r = agent.handle("buy call", YES)
+        assert r.get("needs_answer") == "underlying"
+        assert not f.sent
+
+
+def test_an_unrelated_command_drops_the_question():
+    # A pending order must not be completed later by accident.
+    with Fake() as f:
+        agent.handle("buy call", YES)
+        agent.handle("what are my limits", YES)
+        r = agent.handle("bank nifty", YES)
+        assert "wasn't waiting" in r["speak"]
+        assert not f.sent
+
+
+def test_pending_question_expires():
+    with Fake() as f:
+        agent.handle("buy call", YES)
+        agent._pending["expires"] = 0
+        r = agent.handle("sensex", YES)
+        assert "wasn't waiting" in r["speak"]
+        assert not f.sent
+
+
+def test_unsupported_index_is_never_read_as_a_supported_one():
+    # "fin nifty" contains "nifty" - it must not become a NIFTY order.
+    with Fake() as f:
+        for said in ("buy fin nifty call", "buy sensex fifty put",
+                     "buy nifty next fifty call"):
+            r = agent.handle(said, YES)
+            assert "aren't supported" in r["speak"], said
+        assert not f.sent
+
+
+def test_index_without_call_or_put_is_refused():
+    with Fake() as f:
+        r = agent.handle("buy bank nifty", YES)
+        assert "say call or put" in r["speak"]
+        assert not f.sent
+
+
+# --- how people actually talk ------------------------------------------
+
+def test_mid_sentence_correction_is_what_gets_previewed():
+    # Regression: "buy call no wait put" previewed a CALL - the thing just
+    # cancelled - and a quick 'y' would have bought it.
+    import voice.parser as parser
+    for said, expected in (("buy nifty call no wait put", "PE"),
+                           ("buy nifty put sorry call", "CE")):
+        assert parser.parse(said)["option_type"] == expected, said
+
+
+def test_things_that_are_not_instructions_do_nothing():
+    with Fake() as f:
+        for said in ("don't buy a call", "do not sell",
+                     "should i buy yesbank", "what if i buy a put",
+                     "what was yesterday's close on yesbank",
+                     "buy call put", "cancel", "never mind"):
+            r = agent.handle(said, YES)
+            assert "preview" not in r, said
+        assert not f.sent
+
+
+# --- stocks ---------------------------------------------------------------
+
+def test_asks_intraday_or_delivery_and_uses_the_answer():
+    with Fake() as f:
+        r = agent.handle("buy one yesbank", YES)
+        assert r.get("needs_answer") == "product" and not f.sent
+        agent.handle("delivery", YES)
+        assert f.sent and f.sent[0]["product"] == "C"
+
+
+def test_asks_how_many_and_uses_the_answer():
+    with Fake() as f:
+        r = agent.handle("buy yesbank intraday", YES)
+        assert r.get("needs_answer") == "quantity" and not f.sent
+        agent.handle("three", YES)
+        assert f.sent and f.sent[0]["qty"] == 3 and f.sent[0]["product"] == "I"
+
+
+def test_company_that_could_be_two_is_asked_about():
+    with Fake() as f:
+        for said in ("buy one hdfc intraday", "buy one tata intraday",
+                     "buy one bajaj intraday"):
+            r = agent.handle(said, YES)
+            assert r.get("needs_clarification"), said
+        assert not f.sent
+
+
+def test_unknown_company_is_refused_not_searched():
+    # The very first bug: "idea" became IDEAFORGE via prefix search.
+    with Fake() as f:
+        r = agent.handle("buy one idea intraday", YES)
+        assert "don't know" in r["speak"] and not f.sent
+
+
+def test_preview_names_the_company():
+    shown = {}
+    with Fake():
+        agent.handle("buy one yesbank intraday",
+                     lambda p: (shown.update(p), False)[1])
+        assert shown["company"] == "Yes Bank"
+        assert "intraday" in shown["say"]
+
+
+def test_exit_keeps_the_positions_product():
+    held = [{"symbol": "YESBANK-EQ", "qty": 5, "avg_price": 22.0,
+             "ltp": 22.44, "prd": "I"}]
+    with Fake(positions=lambda include_closed=False: held) as f:
+        r = agent.handle("sell my yesbank", YES)
+        assert r.get("needs_answer") is None, "asked intraday/delivery on an exit"
+        assert f.sent[0]["product"] == "I"
+
+
+# --- from the first real spoken session -----------------------------------
+
+def test_a_repeated_answer_still_answers():
+    # Whisper heard "Sensex" as "Sensex. Sensex." - the answer was not
+    # recognised and the pending order was lost.
+    import voice.parser as parser
+    assert parser.parse("Sensex. Sensex.")["intent"] == "index_answer"
+    assert parser.parse("intraday intraday")["intent"] == "product_answer"
+    assert parser.parse("sensex nifty")["intent"] != "index_answer"
+
+
+def test_a_misheard_at_in_a_quote_does_not_lose_the_company():
+    # "at" came through as "Act": "what is hdfc life act". The quote rule
+    # reads past it - the stock list does not guess by dropping words,
+    # which turned "sbi card" into SBI and "sun tv" into Sun Pharma.
+    from voice import stocks
+    from voice.parser import parse
+    assert parse("what is hdfc life act")["name"] == "hdfc life"
+    assert stocks.resolve("hdfc life act") is None
+    assert stocks.resolve("sbi card") is None
+
+
+
+# --- found in the final review ---------------------------------------------
+
+def test_unclear_speech_never_reaches_the_confirm_screen():
+    shown = []
+    with Fake() as f:
+        for said in ("buy yes bank sell infosys", "buy nifty call on sensex",
+                     "buy nifty call no wait sell", "sell 10 yes bank 20",
+                     "buy nifty 23100s call", "buy nifty call, no, don't",
+                     "Sell 10 Infosys. Buy.", "buy nifty call. no."):
+            r = agent.handle(said, lambda p: shown.append(p) or True)
+            assert r.get("blocked") or r.get("cancelled"), (said, r)
+        assert not shown and not f.sent
+
+
+LADDER = set(range(22500, 23700, 50))
+
+
+def fake_option_contract(name, opt, strike=None, expiry=None):
+    strike = strike or 23050
+    return {"tsym": f"NIFTY29SEP26{opt[0]}{strike}", "token": "1",
+            "exchange": "NFO", "underlying": name,
+            "cadence": "monthly" if name == "BANKNIFTY" else "weekly",
+            "lot": 65, "tick": 0.05, "strike": strike, "expiry": "2026-09-29",
+            "expires_today": False, "option_type": opt, "ltp": 80.0,
+            "bid": 79.9, "ask": 80.1, "spot": 23047.0, "lower_circuit": 1.0,
+            "upper_circuit": 500.0}
+
+
+def with_ladder(fn):
+    saved = agent._ladder_and_spot
+    agent._ladder_and_spot = lambda name: (LADDER, 23047.0, date(2026, 9, 29))
+    try:
+        with Fake(option_contract=fake_option_contract) as f:
+            fn(f)
+    finally:
+        agent._ladder_and_spot = saved
+
+
+def test_a_price_after_at_is_never_a_lot_count():
+    # "buy nifty call at 85" was 85 lots.
+    def check(f):
+        r = agent.handle("buy nifty call at 85", YES)
+        assert not f.sent, f.sent
+        assert "market" in r["speak"], r["speak"]
+    with_ladder(check)
+
+
+def test_a_strike_after_at_is_still_the_strike():
+    def check(f):
+        agent.handle("buy nifty call at 23100", YES)
+        assert f.sent and f.sent[0]["tsym"].endswith("C23100"), f.sent
+        assert f.sent[0]["qty"] == 65, f.sent
+    with_ladder(check)
+
+
+def test_exit_never_closes_a_strike_that_was_not_said():
+    # "twenty three one" summed to 24 and "hundred" read as thousands, so
+    # this closed a 24000 call.
+    held = [pos("NIFTY29SEP26C24000", 65)]
+    with Fake(positions=lambda include_closed=False: held) as f:
+        r = agent.handle("exit the twenty three one hundred call", YES)
+        assert not f.sent, f.sent
+        assert "don't hold" in r["speak"], r["speak"]
+
+
+def test_exit_honours_a_spoken_quantity():
+    held = [pos("NIFTY29SEP26C23100", 130)]            # two lots of 65
+    with Fake(positions=lambda include_closed=False: held) as f:
+        agent.handle("exit one lot of the 23100 call", YES)
+        assert f.sent and f.sent[0]["qty"] == 65, f.sent
+    with Fake(positions=lambda include_closed=False: held) as f:
+        r = agent.handle("exit 3 lots of the nifty call", YES)
+        assert not f.sent and "2 lots" in r["speak"], r["speak"]
+    with Fake(positions=lambda include_closed=False: held) as f:
+        agent.handle("exit the nifty call", YES)
+        assert f.sent and f.sent[0]["qty"] == 130, f.sent
+
+
+def test_same_strike_in_two_expiries_does_not_loop():
+    held = [pos("NIFTY29SEP26C23100", 65), pos("NIFTY06OCT26C23100", 65)]
+    with Fake(positions=lambda include_closed=False: held) as f:
+        r = agent.handle("exit the 23100 call", YES)
+        assert not f.sent
+        assert r.get("needs_answer") != "strike", r["speak"]
+        assert "expir" in r["speak"], r["speak"]
+
+
+def test_partial_fill_then_cancel_is_not_called_a_rejection():
+    with Fake(wait_for_outcome=lambda n, **k: {
+            "status": "CANCELED", "final": True, "quantity": 2, "filled": 1,
+            "avg_fill_price": 22.45, "reason": None}):
+        r = agent.handle("buy 2 yesbank intraday", YES)
+        assert r["outcome"] == "partial", r
+        assert "rejected" not in r["speak"].lower(), r["speak"]
+        assert "1 of 2" in r["speak"], r["speak"]
+        assert orders_counted() == 1
+
+
+def test_a_cancelled_order_is_called_cancelled():
+    with Fake(wait_for_outcome=lambda n, **k: {
+            "status": "CANCELED", "final": True, "quantity": 1, "filled": 0,
+            "reason": None}):
+        r = agent.handle("buy 1 yesbank intraday", YES)
+        assert "rejected" not in r["speak"].lower(), r["speak"]
+        assert "cancel" in r["speak"].lower(), r["speak"]
+        assert orders_counted() == 0
+
+
+def test_nothing_done_is_always_flagged():
+    # The flag is what plays the "nothing sent" sound. Without it, a
+    # misheard command was followed by silence - indistinguishable, eyes on
+    # the chart, from an order still in flight.
+    with Fake() as f:
+        for said in ("the weather is nice", "sell my infosys", "exit call",
+                     "buy yes bank sell infosys"):
+            r = agent.handle(said, YES)
+            assert r.get("blocked") or r.get("outcome"), (said, r)
+        assert not f.sent
+
+
+def test_an_ip_refusal_is_explained():
+    # The broker's own words don't say what to do. Nothing was sent.
+    with Fake(place=lambda *a: {"status": "REJECTED",
+                                "reason": "Invalid IP address"}):
+        r = agent.handle("buy one yesbank intraday", YES)
+        assert "internet-address" in r["speak"], r["speak"]
+        assert orders_counted() == 0
+
+    def refused(include_closed=False):
+        raise b.BrokerError("Request not allowed from this IP")
+    with Fake(positions=refused):
+        r = agent.handle("what do i own", YES)
+        assert r.get("blocked") and "internet-address" in r["speak"], r
+
+
+# --- every word has a job (the strict speech rule) ----------------------------
+
+def test_a_number_that_is_not_a_strike_is_not_quietly_lots():
+    def check(f):
+        r = agent.handle("buy nifty call 5", YES)
+        assert not f.sent and '"5 lots"' in r["speak"], r["speak"]
+        r = agent.handle("buy nifty call for 5", YES)
+        assert not f.sent and "price" in r["speak"], r["speak"]
+        agent.handle("buy nifty call 2 lots", YES)
+        assert f.sent and f.sent[0]["qty"] == 130, f.sent
+    with_ladder(check)
+
+
+def test_a_correction_swaps_only_what_was_corrected():
+    def check(f):
+        agent.handle("buy nifty 23100 call, make it two lots", YES)
+        agent.handle("buy two nifty 23100 calls, sorry, 23150", YES)
+        got = [(o["tsym"][-6:], o["qty"]) for o in f.sent]
+        assert got == [("C23100", 130), ("C23150", 130)], got
+    with_ladder(check)
+
+
+def test_weekly_and_atm_are_honoured_or_asked_about():
+    def check(f):
+        r = agent.handle("buy bank nifty weekly call", YES)
+        assert not f.sent and "weekly" in r["speak"], r["speak"]
+        r = agent.handle("buy nifty 23100 atm call", YES)
+        assert not f.sent and "Say one" in r["speak"], r["speak"]
+        agent.handle("buy nifty weekly atm call", YES)
+        assert len(f.sent) == 1, f.sent
+    with_ladder(check)
+
+
+def test_half_closes_half_in_whole_units():
+    held = [pos("NIFTY29SEP26C23100", 195)]            # three lots
+    with Fake(positions=lambda include_closed=False: held) as f:
+        agent.handle("close half my nifty call", YES)
+        assert f.sent and f.sent[0]["qty"] == 65, f.sent  # 1 of 3, down
+    with Fake(positions=lambda include_closed=False: [
+            pos("NIFTY29SEP26C23100", 65)]) as f:
+        r = agent.handle("close half my nifty call", YES)
+        assert not f.sent and "can't be halved" in r["speak"], r["speak"]
+    shares = [{"symbol": "YESBANK-EQ", "qty": 51, "avg_price": 22.0,
+               "ltp": 22.44, "prd": "I"}]
+    with Fake(positions=lambda include_closed=False: shares) as f:
+        agent.handle("sell half my yes bank", YES)
+        assert f.sent and f.sent[0]["qty"] == 25, f.sent
+
+
+def test_words_with_no_job_and_rupee_amounts_are_asked_about():
+    shown = []
+    with Fake() as f:
+        for said in ("buy nifty call stop loss 5", "buy yes bank worth 500",
+                     "is my nifty call closed?", "I won't buy nifty call",
+                     "buy two fifty yes bank", "exit all yes bank"):
+            r = agent.handle(said, lambda p: shown.append(p) or True)
+            assert r.get("blocked") or r.get("cancelled"), (said, r)
+        assert not shown and not f.sent
+
+
+# --- release review, 28 Sep ----------------------------------------------------
+
+def test_no_second_exit_while_one_is_working():
+    # "exit" said again while the first exit rested sent a second sell -
+    # if both filled, a short position.
+    held = [pos("NIFTY29SEP26C23100", 65)]
+    working = [{"tsym": "NIFTY29SEP26C23100", "trantype": "S",
+                "status": "OPEN", "qty": "65", "prc": "80.00"}]
+    with Fake(positions=lambda include_closed=False: held,
+              order_book=lambda: working) as f:
+        r = agent.handle("exit nifty call", YES)
+        assert not f.sent and "already working" in r["speak"], r["speak"]
+    shares = [{"symbol": "YESBANK-EQ", "qty": 5, "avg_price": 22.0,
+               "ltp": 22.44, "prd": "I"}]
+    working = [{"tsym": "YESBANK-EQ", "trantype": "S", "status": "OPEN",
+                "qty": "5", "prc": "22.40"}]
+    with Fake(positions=lambda include_closed=False: shares,
+              order_book=lambda: working) as f:
+        r = agent.handle("sell my yes bank", YES)
+        assert not f.sent and "already working" in r["speak"], r["speak"]
+    # A finished order is not in the way.
+    done = [dict(working[0], status="COMPLETE")]
+    with Fake(positions=lambda include_closed=False: shares,
+              order_book=lambda: done) as f:
+        agent.handle("sell my yes bank", YES)
+        assert f.sent, "a completed order blocked a new exit"
+
+
+def test_which_strike_answer_keeps_the_lots():
+    held = [pos("NIFTY29SEP26C23100", 650), pos("NIFTY29SEP26C23150", 650)]
+    with Fake(positions=lambda include_closed=False: held) as f:
+        r = agent.handle("exit nifty call two lots", YES)
+        assert r.get("needs_answer") == "strike", r["speak"]
+        agent.handle("23100", YES)
+        assert f.sent == [] or f.sent[0]["qty"] == 130, f.sent
+        assert f.sent and f.sent[0]["tsym"].endswith("23100"), f.sent
+
+
+def test_a_misheard_answer_keeps_the_order_and_asks_again():
+    with Fake() as f:
+        r = agent.handle("buy one yes bank", YES)
+        assert r.get("needs_answer") == "product"
+        r = agent.handle("umbrella", YES)
+        assert "Intraday or delivery" in r["speak"], r["speak"]
+        agent.handle("intraday", YES)
+        assert f.sent and f.sent[0]["product"] == "I", f.sent
+
+
+def test_four_heard_as_for_never_becomes_one_lot_or_everything():
+    held = [pos("NIFTY29SEP26C23100", 650)]
+    with Fake(positions=lambda include_closed=False: held) as f:
+        r = agent.handle("exit nifty call for lots", YES)
+        assert not f.sent and "four" in r["speak"], r["speak"]
+        r = agent.handle("buy nifty call for lots", YES)
+        assert not f.sent, f.sent
+
+
+def test_a_sent_order_is_never_lost_track_of():
+    # A garbled reply while watching the order, or Ctrl-C during the wait:
+    # it may be live, so it is counted and the user told to look.
+    for trouble in (AttributeError("garbled"), KeyboardInterrupt()):
+        def wait(n, **k):
+            raise trouble
+        with Fake(wait_for_outcome=wait) as f:
+            r = agent.handle("buy one yesbank intraday", YES)
+            assert f.sent and r["outcome"] == "unknown", r
+            assert "order book" in r["speak"], r["speak"]
+            assert orders_counted() == 1, "possibly live - must count"
+
+
+def test_option_lot_caps_hold():
+    # The only size guard on options. It had no test: disabling it passed
+    # every suite.
+    from datetime import date as _d
+    saved = agent._ladder_and_spot
+    agent._ladder_and_spot = lambda name: (
+        {"NIFTY": LADDER, "BANKNIFTY": set(range(54000, 57001, 100)),
+         "SENSEX": set(range(79500, 82501, 100))}[name],
+        {"NIFTY": 23047.0, "BANKNIFTY": 55500.0, "SENSEX": 81000.0}[name],
+        _d(2026, 9, 29))
+    try:
+        for said, allowed in (("buy nifty call 11 lots", False),
+                              ("buy nifty call 10 lots", True),
+                              ("buy bank nifty call 4 lots", False),
+                              ("buy bank nifty call 3 lots", True),
+                              ("buy sensex call 11 lots", False),
+                              ("buy sensex call 10 lots", True)):
+            with Fake(option_contract=fake_option_contract) as f:
+                r = agent.handle(said, YES)
+                assert bool(f.sent) == allowed, (said, r["speak"])
+                if not allowed:
+                    assert "cap" in r["speak"], r["speak"]
+    finally:
+        agent._ladder_and_spot = saved
+
+
+def test_daily_caps_hold():
+    with Fake():
+        for _ in range(safety.LIMITS.max_option_orders_per_day):
+            safety.record(100.0, "options")
+        try:
+            safety.check_option("NIFTY29SEP26C23100", "NIFTY", 1, 65, 80.0)
+        except safety.Rejected:
+            pass
+        else:
+            raise AssertionError("daily option order cap not enforced")
+    with Fake():
+        try:
+            safety.check("YESBANK-EQ", 1000, 22.0, "LMT")    # 22,000 > 15,000
+        except safety.Rejected:
+            pass
+        else:
+            raise AssertionError("per-order value cap not enforced")
+        try:
+            safety.check("NOTLISTED-EQ", 1, 22.0, "LMT")
+        except safety.Rejected:
+            pass
+        else:
+            raise AssertionError("stock list not enforced")
+
+
+def test_not_logged_in_is_said_plainly():
+    # Every morning before the login: this was a RuntimeError, printed as
+    # "error: ..." and never spoken.
+    saved = (b._api, b.connect)
+    b._api = None
+
+    def no_session(interactive=True):
+        raise RuntimeError("No valid cached session")
+    b.connect = no_session
+    try:
+        for said in ("funds", "what do i own"):
+            r = agent.handle(said, YES)
+            assert r.get("blocked") and "not logged in" in r["speak"], r
+    finally:
+        b._api, b.connect = saved
+
+
+def test_an_error_in_the_main_loop_is_spoken():
+    from voice import main, speak
+    heard = []
+    saved = speak.announce
+    speak.announce = heard.append
+    try:
+        main.report_error(OSError("microphone unplugged"))
+    finally:
+        speak.announce = saved
+    assert heard and heard[0].get("blocked"), heard
+    assert "nothing was done" in heard[0]["speak"], heard
+
+# --- what is heard -------------------------------------------------------
+
+def test_strikes_are_said_the_way_traders_say_them():
+    for strike, said in ((23150, "23 1 50"), (23050, "23 oh 50"),
+                         (23000, "23 thousand"), (51500, "51 5 hundred"),
+                         (73900, "73 9 hundred"), (23125, "23125"),
+                         (950, "950"), (23150.5, "23150.5")):
+        assert agent._strike_words(strike) == said, (strike, said)
+
+
+def test_option_readback_is_short():
+    # Side, lots, index, strike, call/put and expiry; the rupee total is on
+    # the screen. It was 5.7 s aloud, mostly numbers.
+    shown = {}
+
+    def check(f):
+        agent.handle("buy nifty call at 23150",
+                     lambda p: (shown.update(p), False)[1])
+        assert shown["say"] == "Buy 1 lot, Nifty 23 1 50 call, weekly.", shown["say"]
+        assert (shown["strike"], shown["option_type"]) == (23150, "CE"), shown
+        assert "rupees" in shown["spoken"]          # the full form is kept
+    with_ladder(check)
+
+
+def test_exit_readback_is_short():
+    shown = {}
+    held = [pos("NIFTY29SEP26C23150", 65, 72.0)]
+    with Fake(positions=lambda include_closed=False: held):
+        agent.handle("exit call", lambda p: (shown.update(p), False)[1])
+    assert shown["say"].startswith("Exit Nifty 23 1 50 call, "), shown["say"]
+    assert "rupees" not in shown["say"], shown["say"]
+    # The card shows strike and call/put at a glance, for an exit too.
+    assert (shown["underlying"], shown["strike"], shown["option_type"]) == (
+        "Nifty", 23150, "CE"), shown
+    assert shown["expiry"] == "2026-09-29" and shown["when"], shown
+
+
+def test_a_far_month_exit_says_its_date_not_weekly():
+    # "Exit Nifty 23 1 hundred call, weekly" for a 6 Oct contract told the
+    # ear something false.
+    shown = {}
+    held = [pos("NIFTY06OCT26C23100", 65, 60.0)]
+    with Fake(positions=lambda include_closed=False: held):
+        agent.handle("exit call", lambda p: (shown.update(p), False)[1])
+    assert shown["say"] == "Exit Nifty 23 1 hundred call, 6 Oct.", shown["say"]
+    assert shown["when"] == "6 Oct"
+
+
+def test_the_nearest_expiry_is_said_as_its_cadence():
+    shown = {}
+    held = [pos("NIFTY29SEP26C23150", 65, 72.0)]
+    saved = ins._now_ist
+    ins._now_ist = lambda: datetime(2026, 9, 28, 11, 0, tzinfo=ins.IST)
+    try:
+        with Fake(positions=lambda include_closed=False: held):
+            agent.handle("exit call", lambda p: (shown.update(p), False)[1])
+    finally:
+        ins._now_ist = saved
+    assert shown["say"] == "Exit Nifty 23 1 50 call, weekly.", shown["say"]
+
+
+def test_an_exit_on_expiry_day_says_so():
+    shown = {}
+    held = [pos("NIFTY29SEP26C23150", 65, 72.0)]
+    saved = ins._now_ist
+    ins._now_ist = lambda: datetime(2026, 9, 29, 11, 0, tzinfo=ins.IST)
+    try:
+        with Fake(positions=lambda include_closed=False: held):
+            agent.handle("exit call", lambda p: (shown.update(p), False)[1])
+    finally:
+        ins._now_ist = saved
+    assert shown["say"] == "Exit Nifty 23 1 50 call, expires today.", shown["say"]
+
+
+def test_exit_pnl_is_at_the_price_it_is_sent_at():
+    shown = {}
+    held = [pos("NIFTY29SEP26C23150", 130, 20.0)]      # long 2 lots
+    with Fake(positions=lambda include_closed=False: held):
+        agent.handle("exit call", lambda p: (shown.update(p), False)[1])
+    assert shown["pnl"] == round((shown["price"] - 20.0) * 130, 2), shown
+    assert shown["lots"] == 2, shown
+
+
+def test_a_strike_that_isnt_listed_is_said_and_flagged():
+    shown = {}
+
+    def adjusted(name, opt, strike=None, expiry=None):
+        c = fake_option_contract(name, opt, strike=23100, expiry=expiry)
+        c["strike_adjusted_from"] = 23075
+        return c
+
+    saved = agent._ladder_and_spot
+    agent._ladder_and_spot = lambda name: (LADDER, 23047.0, date(2026, 9, 29))
+    try:
+        with Fake(option_contract=adjusted):
+            agent.handle("buy nifty call at 23100", lambda p: (shown.update(p), False)[1])
+    finally:
+        agent._ladder_and_spot = saved
+    assert shown["say"].endswith(" Not 23075."), shown["say"]
+    assert shown["strike_adjusted_from"] == 23075
+    assert "23075 isn't listed" in shown["unusual"], shown["unusual"]
+
+
+def test_at_the_money_is_marked_when_no_strike_is_said():
+    shown = {}
+
+    def check(f):
+        agent.handle("buy nifty call", lambda p: (shown.update(p), False)[1])
+    with_ladder(check)
+    assert shown["strike_chosen"] == "atm", shown
+
+
+def test_why_an_order_is_unusual_comes_from_the_engine():
+    assert agent.unusual({"value": 30000, "lots": 3, "action": "EXIT SELL",
+                          "at_market": False, "when": "expires today"}) == [
+        "large order", "3 lots", "closing a position", "your price", "expires today"]
+    assert agent.unusual({"value": 4725.5, "lots": 1, "action": "BUY",
+                          "at_market": True, "when": "weekly"}) == []
+
+
+def test_a_typed_price_reprices_value_pnl_and_flags():
+    exit_long = {"action": "EXIT SELL", "quantity": 65, "price": 72.4, "entry": 72.35,
+                 "pnl": 3.25, "at_market": True, "value": 4706.0, "lots": 1}
+    agent.reprice(exit_long, 90.0)
+    assert exit_long["value"] == 5850.0 and exit_long["pnl"] == round((90 - 72.35) * 65, 2)
+    assert "your price" in exit_long["unusual"] and "closing a position" in exit_long["unusual"]
+    exit_short = {"action": "EXIT BUY", "quantity": 10, "price": 22.4, "entry": 22.0,
+                  "at_market": True}
+    agent.reprice(exit_short, 21.0)
+    assert exit_short["pnl"] == 10.0                      # bought back below the short
+    big = {"action": "BUY (intraday)", "quantity": 1000, "price": 24.0, "at_market": True}
+    agent.reprice(big, 26.0)
+    assert big["unusual"] == ["large order", "your price"], big["unusual"]
+
+
+def test_results_are_heard_short():
+    with Fake(place=lambda *a: {"status": "UNKNOWN", "reason": "timeout"}):
+        r = agent.handle("buy one yesbank intraday", YES)
+    assert r["say"] == "Order may be live. Check your order book.", r
+    with Fake(wait_for_outcome=lambda n, **k: {"order_no": n, "status": "OPEN",
+                                               "final": False, "quantity": 1, "filled": 0}):
+        r = agent.handle("buy one yesbank intraday", YES)
+    assert r["outcome"] == "resting" and r["say"].startswith("Resting at "), r
+
+
+def test_account_questions_say_which_pane_shows_them():
+    with Fake(positions=lambda include_closed=False: []):
+        assert agent.handle("what do I own", YES).get("show") == "positions"
+
+
+def test_stock_readback_is_short():
+    shown = {}
+    with Fake():
+        agent.handle("buy one yesbank intraday",
+                     lambda p: (shown.update(p), False)[1])
+    assert shown["say"] == "Buy 1 Yes Bank, intraday.", shown["say"]
+
+
+def test_a_fill_is_heard_short_and_shown_in_full():
+    with Fake():
+        r = agent.handle("buy one yesbank intraday", YES)
+    assert r["say"] == "Filled at 22.45.", r
+    assert r["speak"].startswith("Filled. Bought"), r
+
+
+# --- from the panel's own log, 2026-10-01: things said that had to be repeated
+
+def test_how_many_answered_as_buy_one():
+    with Fake() as f:
+        r = agent.handle("buy yes bank intraday", YES)
+        assert r.get("needs_answer") == "quantity", r["speak"]
+        agent.handle("Buy one.", YES)
+        assert f.sent and f.sent[0]["qty"] == 1, f.sent
+
+
+def test_the_other_side_is_not_an_answer():
+    with Fake() as f:
+        r = agent.handle("buy yes bank intraday", YES)
+        assert r.get("needs_answer") == "quantity", r["speak"]
+        r = agent.handle("sell one", YES)
+        assert r.get("blocked") and not f.sent, r
+
+
+def test_a_bare_number_with_nothing_waiting_trades_nothing():
+    with Fake() as f:
+        r = agent.handle("buy one", YES)
+        assert r.get("blocked") and not f.sent, r
+
+
+def test_index_level():
+    q = {"stat": "Ok", "lp": "25010.50", "c": "24935.70", "tsym": "Nifty 50"}
+    with Fake(quote_checked=lambda *a, **k: dict(q)) as f:
+        r = agent.handle("What is Nifty at?", YES)
+        assert r["speak"] == "Nifty is at 25,010.50, +0.30 percent.", r["speak"]
+        assert not f.sent
+    with Fake(quote_checked=lambda *a, **k: None):
+        r = agent.handle("how many points is bank nifty at", YES)
+        assert r.get("blocked") and "reliable" in r["speak"], r
+
+
+def test_is_f_and_o_enabled():
+    ok = [{"name": "market data", "ok": True, "detail": "", "fix": "", "blocking": True},
+          {"name": "NFO segment", "ok": True, "detail": "enabled", "fix": "", "blocking": False},
+          {"name": "BFO segment", "ok": True, "detail": "enabled", "fix": "", "blocking": False}]
+    with Fake(account_checks=lambda: ok) as f:
+        r = agent.handle("Is Futures and Options enabled?", YES)
+        assert r["speak"] == "Yes. Options trading is enabled on NFO and BFO.", r["speak"]
+        assert not f.sent
+    half = ok[:2] + [{**ok[2], "ok": False,
+                      "fix": "Sensex options need the BFO segment activated with the broker."}]
+    with Fake(account_checks=lambda: half):
+        r = agent.handle("is f&o enabled", YES)
+        assert r["speak"].startswith("NFO enabled. Sensex options need the BFO"), r["speak"]
+
+
+def test_a_no_then_a_whole_new_order_takes_the_new_one():
+    with Fake() as f:
+        agent.handle("Buy one YESBANK. No, buy two YESBANK delivery.", YES)
+        assert f.sent and f.sent[0]["qty"] == 2 and f.sent[0]["product"] == "C", f.sent
+
+
+if __name__ == "__main__":
+    passed = failed = 0
+    for name, fn in sorted(globals().items()):
+        if not name.startswith("test_"):
+            continue
+        try:
+            fn()
+            passed += 1
+            print(f"ok   {name}")
+        except Exception as e:
+            failed += 1
+            print(f"FAIL {name}: {type(e).__name__}: {e}")
+    print(f"\n{passed} passed, {failed} failed")
+    sys.exit(1 if failed else 0)

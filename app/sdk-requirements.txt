@@ -1,0 +1,6 @@
+# Shoonya's connector: Kambala Solutions' NorenRestApiOAuth (Python package
+# NorenRestApiPy). Its licence forbids copying it, so it is never shipped
+# inside Sayso.app. The installer downloads exactly this file from PyPI, the
+# publisher's own channel, on each Mac. pip refuses anything whose checksum
+# differs. Its dependencies are open source and bundled (requirements-dist.txt).
+NorenRestApiOAuth==0.0.41 --hash=sha256:c34cdbc08eb9e815df20b407625ca24aa08ae56f8c867a8e649cf23226f3e109

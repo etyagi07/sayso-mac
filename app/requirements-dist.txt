@@ -1,0 +1,28 @@
+# The engine's dependencies for the packaged app (Apple Silicon only).
+# sayso/requirements.txt, minus torch: mlx-whisper lists it, but only its
+# model-conversion tool imports it, and it is over half the bundle.
+# mlx-whisper itself is installed with --no-deps by package.sh; its runtime
+# dependencies are listed here instead, at the versions the engine is tested
+# with (sayso/.venv).
+
+# broker API. The connector itself (NorenRestApiOAuth) is NOT bundled: its
+# licence forbids copying, so each Mac downloads it (sdk-requirements.txt).
+# These are its dependencies, open source, at the tested versions.
+pandas==3.0.6
+PyYAML==6.0.3
+requests==2.34.2
+websocket-client==1.9.2
+numpy==2.5.3
+tzdata==2026.4
+
+# audio capture
+sounddevice==0.5.6
+
+# speech recognition: mlx-whisper 0.4.3's runtime dependencies, no torch
+mlx==0.32.3
+numba==0.67.0
+tqdm==4.70.1
+more-itertools==11.1.0
+tiktoken==0.14.0
+huggingface_hub==2.0.0
+scipy==1.18.1

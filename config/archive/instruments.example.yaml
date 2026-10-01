@@ -1,0 +1,46 @@
+# SUPERSEDED — archived 2026-09-29. Not current; written for ProjectZero's
+# abandoned staged-order model. The engine is sayso/. Do not use.
+
+# instruments.yaml — the hand-maintained instrument table for staged-order mode.
+#
+# This REPLACES the alias table for the options path. There is no fuzzy search
+# over the exchange symbol master (CLAUDE.md rule 12) — the UI populates a
+# picker from this file and selection is visual, not acoustic.
+#
+# Copy to instruments.yaml and edit. instruments.yaml is gitignored.
+
+version: 1
+
+instruments:
+  - key: NIFTY
+    exch: NFO
+    instrument: OPT
+    lot_size: 75          # verify against the current contract spec
+    tick_size: 0.05
+    strike_step: 50
+    product: NRML
+    spoken: "Nifty"
+    tsym_template: "{key}{expiry:%d%b%y}{strike}{opt}"   # NOTE: %b is mixed-case; uppercase it.
+
+  - key: BANKNIFTY
+    exch: NFO
+    instrument: OPT
+    lot_size: 35          # verify against the current contract spec
+    tick_size: 0.05
+    strike_step: 100
+    product: NRML
+    spoken: "Bank Nifty"
+    tsym_template: "{key}{expiry:%d%b%y}{strike}{opt}"   # NOTE: %b is mixed-case; uppercase it.
+
+  # UNTESTED PATH. The equity leg is allowed by the model but has never been
+  # exercised: require_qualifier_for_options, the two-notional risk check and
+  # allow_protected_market_options all assume an option. Leave commented until
+  # docs/07-roadmap.md's "equity and futures paths" gap is closed.
+  #
+  # - key: RELIANCE
+  #   exch: NSE
+  #   instrument: EQ
+  #   lot_size: 1
+  #   tick_size: 0.05
+  #   product: MIS
+  #   spoken: "Reliance"

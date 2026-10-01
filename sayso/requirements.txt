@@ -1,0 +1,16 @@
+# Broker API
+NorenRestApiOAuth==0.0.41
+requests==2.34.2
+websocket-client==1.9.2
+numpy==2.5.3
+# Timezone data. Windows has no system copy, and without it the app can't
+# tell Indian market hours - it crashes at start ("Asia/Kolkata" not found).
+tzdata==2026.4
+
+# Audio capture
+sounddevice==0.5.6
+
+# Speech recognition - same Whisper models either way.
+# MLX is markedly faster but runs only on Apple Silicon.
+mlx-whisper==0.4.3; sys_platform == "darwin" and platform_machine == "arm64"
+faster-whisper>=1.0; sys_platform != "darwin" or platform_machine != "arm64"

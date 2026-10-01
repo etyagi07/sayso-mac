@@ -1,0 +1,121 @@
+# SUPERSEDED — archived 2026-09-29. Not current; written for ProjectZero's
+# abandoned staged-order model. The engine is sayso/. Do not use.
+
+# staged.yaml — every tunable in the system (docs/02-flow.md is the model).
+#
+# Every number here is a STARTING POINT. Tune from logs, not from intuition.
+# Copy to staged.yaml and edit. staged.yaml is gitignored.
+#
+# Loading is strict: a missing key, a non-numeric limit, a duplicate instrument
+# or `mode: live` all raise ConfigError at startup (docs/03-architecture.md).
+
+version: 1
+
+mode: paper           # `live` here is REJECTED at load — CLAUDE.md rule 5.
+                      # Live requires session-level arming, never a config file.
+
+engine:
+  host: 127.0.0.1     # refuses to bind 0.0.0.0 even if told to
+  port: 8787
+
+hotkeys:
+  talk: "cmd+shift+space"   # push-to-talk (hold)
+  talk_mode: hold           # hold | toggle
+  commit: "space"           # captured ONLY while the gate is open
+  cancel: "esc"
+  cancel_all: "cmd+shift+."   # kill switch L1 — hotkey only, never voice (rule 23)
+  zero_out: "cmd+shift+/"     # kill switch L2 — hold 1500ms
+
+staged:
+  listen_mode: armed_window          # armed_window | ptt_always
+                                     # armed_window: PTT is accepted only while
+                                     # something is staged and unexpired
+  stage_ttl_s: 90                    # parameters go stale; re-confirm after this
+  require_qualifier_for_options: true  # "buy call", not bare "buy" — settled, CLAUDE.md E
+  allow_voice_confirm: false         # UNSAFE — defeats channel separation (rule 2)
+  gate_timeout_ms: 6000
+  hold_to_commit_ms: 800
+  kill_hold_ms: 1500
+  max_quote_age_ms: 5000
+  read_floor_ms: 700                 # fatigue floor; CALIBRATE once, deliberately
+
+audio:
+  sample_rate: 16000
+  preroll_ms: 300                    # so the first phoneme isn't clipped
+  min_utterance_ms: 400
+  max_utterance_ms: 4000             # no phrase in a 504-entry vocabulary is longer
+  vad: webrtcvad                     # webrtcvad | silero
+  vad_aggressiveness: 2
+  save_wav: true                     # keep per-command audio for vocabulary tuning
+
+asr:
+  cloud_enabled: true                # order-intent audio leaves the machine when true
+  local:
+    model: small.en                  # distil-small.en | small.en | base.en
+    compute_type: int8
+    prime_on_start: true
+  cloud:
+    model: whisper-large-v3-turbo
+    base_url: https://api.groq.com/openai/v1
+    timeout_ms: 1500
+  race:
+    prefer_cloud_window_ms: 400
+    total_budget_ms: 1800
+    reject_on_disagreement: true     # docs/06-voice-and-ui.md policy step 3
+
+risk:
+  # Options carry two notionals that differ by ~100x. One cap cannot mean both.
+  #
+  # NOT independent: underlying/premium is strike/price -- ~175x for a cheap OTM
+  # option, ~25x deep ITM. Pick a pair where each can bind first, or one is dead
+  # code. zero-doctor fails the build if a cap blocks even ONE lot.
+  #   1 lot NIFTY 25000 CE @142.50 = premium 10,687 / underlying 18,75,000
+  #   premium cap / lot_size is the max per-unit price tradable at one lot:
+  #     2,00,000 / 75 = Rs 2,666  (a 75,000 cap gave Rs 1,000 — too low for ITM)
+  max_premium_per_order: 200000
+  max_premium_soft: 30000            # above this -> hold-to-commit
+  max_underlying_notional_per_order: 10000000
+  max_orders_per_day: 40
+  max_orders_per_minute: 6           # 100x under the 10/s threshold; raise if it binds
+  limit_sanity_pct: 8.0              # options move faster than cash; wider than 5
+  reject_cooloff:
+    rejects: 3
+    window_s: 60
+    lockout_s: 120
+  session_hours:
+    tz: Asia/Kolkata
+    open: "09:15"
+    close: "15:30"
+    weekdays_only: true
+
+execution:
+  protection_pct_cash: 0.5
+  protection_pct_futures: 1.0
+  allow_protected_market_options: false   # spreads too wide; options need limits
+  default_retention: DAY
+  reconcile_timeout_ms: 5000
+  reconcile_poll_ms: 250
+  position_poll_ms: 2000
+
+broker:
+  name: paper                        # paper | shoonya — credentials from .env only
+
+paper:
+  latency_ms_mean: 120
+  latency_ms_stddev: 40
+  reject_rate: 0.0                   # raise these three for the M2 chaos test
+  partial_fill_rate: 0.0
+  lost_response_rate: 0.0
+
+normalize:
+  filler_words: [uh, um, er, like, please, okay, ok, hey, now, just, me, a, an]
+  # Grows from OBSERVED errors in your own logs. Never from imagination.
+  asr_corrections:
+    by: buy
+    bye: buy          # observed: "buy" transcribes as "bye" at the end of a phrase
+    cell: sell
+    sal: sell
+
+logging:
+  dir: ./logs
+  level: INFO

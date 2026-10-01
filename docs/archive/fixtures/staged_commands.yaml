@@ -1,0 +1,303 @@
+# SUPERSEDED — archived 2026-09-29. Not current; written for ProjectZero's
+# abandoned staged-order model. The engine is sayso/. Do not use.
+
+# Golden fixtures for the staged-order model. THE live fixture file.
+# (tests/fixtures/transcripts.yaml is the archived equity model — see its header.)
+#
+# This file ONLY GROWS (CLAUDE.md rule 17).
+#
+# The M1 hard gate is STRUCTURAL, not statistical: no spoken word may produce an
+# order on a different strike, a different option type, or larger than what is
+# staged. Cases marked [GATE] assert exactly that and may never be relaxed.
+#
+# `expect` is `intent` or `reject`. Anything not asserted is not checked, so
+# assert the field the case is actually about.
+
+version: 1
+
+defaults:
+  now: "2026-09-21T10:30:00+05:30"
+  config:
+    stage_ttl_s: 90
+    require_qualifier_for_options: true
+    max_premium_per_order: 200000
+    max_premium_soft: 30000
+    max_underlying_notional_per_order: 10000000
+    limit_sanity_pct: 8.0
+  stage:                        # NIFTY 25000 CE, 1 lot, staged 10 seconds ago
+    staged_at: "2026-09-21T10:29:50+05:30"
+    instrument_key: NIFTY
+    exch: NFO
+    instrument: OPT
+    expiry: "2026-09-24"
+    strike: 25000
+    opt: CE
+    lots: 1
+    lot_size: 75
+    product: NRML
+    limit: "142.50"
+  world:
+    ltps: { "NIFTY24SEP2625000CE": "142.50", "NIFTY24SEP2625100CE": "98.00",
+             "NIFTY24SEP2624000CE": "1000.00" }
+    ltp_age_ms: 200
+    positions: {}               # flat unless the case says otherwise
+    asr_agreement: true
+
+cases:
+
+  # ── The intended interaction ────────────────────────────────────────────
+  - id: buy_call_clean
+    phrase: "buy call"
+    expect: intent
+    intent: { side: BUY, intent: OPEN_LONG, strike: 25000, opt: CE,
+              quantity: 75, price: "142.50", price_type: LIMIT,
+              premium_notional: "10687.50", underlying_notional: "1875000" }
+
+  - id: buy_the_call
+    phrase: "buy the call"
+    expect: intent
+    intent: { side: BUY, quantity: 75 }
+
+  - id: sell_call_from_flat_is_a_write
+    phrase: "sell call"
+    expect: intent
+    intent: { side: SELL, intent: OPEN_SHORT, quantity: 75, friction: hold }
+    note: "Writing is not closing. OPEN_SHORT always forces hold-to-commit."
+
+  # ── Qualifier: assertion about the stage, not a selector ────────────────
+  - id: bare_buy_rejects_by_default
+    phrase: "buy"
+    expect: reject
+    reject: { reason: qualifier_required }
+    note: "The brief's headline example. Settled against — CLAUDE.md section E."
+
+  - id: bare_buy_allowed_when_flag_off
+    phrase: "buy"
+    config: { require_qualifier_for_options: false }
+    expect: intent
+    intent: { side: BUY, quantity: 75 }
+
+  - id: qualifier_mismatch_rejects              # [GATE]
+    phrase: "buy put"
+    expect: reject
+    reject: { reason: qualifier_mismatch }
+    note: "A PE spoken against a staged CE must NEVER select the PE leg."
+
+  - id: qualifier_mismatch_does_not_switch_leg  # [GATE]
+    phrase: "sell put"
+    expect: reject
+    reject: { reason: qualifier_mismatch }
+
+  # ── Rule 22: SELL reduces before it opens ───────────────────────────────
+  - id: sell_against_long_closes_it             # [GATE]
+    phrase: "sell call"
+    world: { positions: { "NFO:NIFTY24SEP2625000CE:NRML": 75 } }
+    expect: intent
+    intent: { side: SELL, intent: CLOSE_LONG, quantity: 75 }
+    note: "Never flips through flat into a short."
+
+  - id: sell_against_smaller_long_clamps        # [GATE]
+    phrase: "sell call"
+    stage: { lots: 2 }
+    world: { positions: { "NFO:NIFTY24SEP2625000CE:NRML": 75 } }
+    expect: intent
+    intent: { side: SELL, intent: CLOSE_LONG, quantity: 75,
+              quantity_provenance: clamped }
+    note: "Staged 150, long 75 -> sell 75. The other 75 is NOT sold short."
+
+  - id: buy_against_short_closes_it               # [GATE]
+    phrase: "buy call"
+    world: { positions: { "NFO:NIFTY24SEP2625000CE:NRML": -75 } }
+    expect: intent
+    intent: { side: BUY, intent: CLOSE_SHORT, quantity: 75 }
+
+  - id: buy_against_smaller_short_clamps          # [GATE]
+    phrase: "buy call"
+    stage: { lots: 2 }
+    world: { positions: { "NFO:NIFTY24SEP2625000CE:NRML": -75 } }
+    expect: intent
+    intent: { side: BUY, intent: CLOSE_SHORT, quantity: 75,
+              quantity_provenance: clamped }
+    note: >
+      The mirror of sell_against_smaller_long_clamps. Staged 150 against short 75
+      closes 75 and stops at flat; the surplus is NOT bought long. Rule 22 is
+      symmetric and this is the case that proves it.
+
+  - id: buy_when_long_adds
+    phrase: "buy call"
+    world: { positions: { "NFO:NIFTY24SEP2625000CE:NRML": 75 } }
+    expect: intent
+    intent: { side: BUY, intent: OPEN_LONG, quantity: 75 }
+    note: "Agrees with the position, so it adds. Only opposing commands clamp."
+
+  - id: sell_when_short_adds
+    phrase: "sell call"
+    world: { positions: { "NFO:NIFTY24SEP2625000CE:NRML": -75 } }
+    expect: intent
+    intent: { side: SELL, intent: OPEN_SHORT, quantity: 75, friction: hold }
+    note: >
+      Adding to a written position. Permitted — rule 22 forbids flipping, not
+      scaling — but OPEN_SHORT always forces hold-to-commit.
+
+  # ── EXIT is scoped to the contract ──────────────────────────────────────
+  - id: exit_closes_staged_contract
+    phrase: "exit"
+    world: { positions: { "NFO:NIFTY24SEP2625000CE:NRML": 150 } }
+    expect: intent
+    intent: { side: EXIT, intent: CLOSE_LONG, quantity: 150,
+              quantity_provenance: computed, friction: hold }
+
+  - id: exit_ignores_other_strikes              # [GATE]
+    phrase: "close position"
+    world: { positions: { "NFO:NIFTY24SEP2625000CE:NRML": 75,
+                          "NFO:NIFTY24SEP2625100CE:NRML": 300 } }
+    expect: intent
+    intent: { side: EXIT, quantity: 75 }
+    note: "Staged 25000 CE. The 25100 CE position must be untouched."
+
+  - id: exit_needs_no_qualifier
+    phrase: "exit"
+    config: { require_qualifier_for_options: true }
+    world: { positions: { "NFO:NIFTY24SEP2625000CE:NRML": 75 } }
+    expect: intent
+    intent: { side: EXIT, quantity: 75 }
+    note: >
+      The flag applies to BUY and SELL only. There is no leg to assert against when
+      closing what you already hold, and the staged contract identifies it.
+      docs/02-flow.md EXIT section.
+
+  - id: exit_when_flat_rejects
+    phrase: "exit"
+    expect: reject
+    reject: { reason: no_position }
+
+  # ── Stage staleness ─────────────────────────────────────────────────────
+  - id: expired_stage_rejects
+    phrase: "buy call"
+    stage: { staged_at: "2026-09-21T10:27:00+05:30" }   # 180s old, ttl 90
+    expect: reject
+    reject: { reason: stage_expired }
+
+  - id: stage_just_inside_ttl
+    phrase: "buy call"
+    stage: { staged_at: "2026-09-21T10:28:31+05:30" }   # 89s old
+    expect: intent
+
+  - id: no_stage_rejects
+    phrase: "buy call"
+    stage: null
+    expect: reject
+    reject: { reason: no_stage }
+
+  # ── Exact lookup only: no fuzzy, no near miss ───────────────────────────
+  - id: near_miss_bui
+    phrase: "bui call"
+    expect: reject
+    reject: { reason: unknown_phrase }
+
+  - id: near_miss_cal
+    phrase: "buy cal"
+    expect: reject
+    reject: { reason: unknown_phrase }
+
+  - id: ce_is_not_in_the_vocabulary
+    phrase: "buy ce"
+    expect: reject
+    reject: { reason: unknown_phrase }
+    note: "Dropped on acoustic grounds — docs/02-flow.md."
+
+  - id: kill_switch_is_not_speakable
+    phrase: "zero out"
+    expect: reject
+    reject: { reason: unknown_phrase }
+    note: "CLAUDE.md rule 23. Hotkey only."
+
+  - id: conditional_order_rejects
+    phrase: "buy call if it breaks 25100"
+    expect: reject
+    reject: { reason: unknown_phrase }
+
+  - id: filler_is_stripped_not_rejected
+    phrase: "uh okay buy the call please"
+    expect: intent
+    intent: { side: BUY, quantity: 75 }
+
+  - id: asr_correction_bye_to_buy
+    phrase: "bye call"
+    expect: intent
+    intent: { side: BUY }
+    note: "From normalize.asr_corrections — an OBSERVED error, not an imagined one."
+
+  # ── ASR agreement ───────────────────────────────────────────────────────
+  - id: disagreement_rejects
+    phrase: "buy call"
+    world: { asr_agreement: false }
+    expect: reject
+    reject: { reason: asr_disagreement }
+
+  # ── Risk ────────────────────────────────────────────────────────────────
+  - id: premium_cap_rejects
+    phrase: "buy call"
+    stage: { strike: 24000, limit: "1000.00", lots: 3 }
+    expect: reject
+    reject: { reason: max_premium }
+    note: >
+      Breaches ONE cap only, deliberately: premium 2,25,000 > 2,00,000 while
+      underlying 54,00,000 stays under 1cr. An earlier version used 20 lots at
+      142.50, which breached both and so silently asserted an evaluation order
+      that no document stated. That order is now written down in
+      docs/05-execution.md; this case no longer depends on it.
+
+  - id: underlying_cap_rejects
+    phrase: "buy call"
+    stage: { lots: 6, limit: "142.50" }       # underlying 1,12,50,000 > 1cr
+    expect: reject
+    reject: { reason: max_underlying }
+
+  - id: soft_cap_forces_hold
+    phrase: "buy call"
+    stage: { lots: 3, limit: "142.50" }       # premium 32,062 > 30,000 soft
+    expect: intent
+    intent: { friction: hold }
+
+  - id: one_lot_deep_itm_is_tradable
+    phrase: "buy call"
+    stage: { strike: 24000, limit: "1000.00" }
+    expect: intent
+    intent: { quantity: 75, premium_notional: "75000" }
+    note: >
+      The regression that motivated raising max_premium_per_order. Under the old
+      75,000 cap this rejected, making every ITM strike untradeable at one lot.
+
+  - id: no_quote_rejects
+    phrase: "buy call"
+    stage: { strike: 25050 }
+    world: { positions: {} }
+    expect: reject
+    reject: { reason: no_quote }
+    note: "No LTP for that contract at all — distinct from a stale one."
+
+  - id: stale_quote_skips_limit_sanity
+    phrase: "buy call"
+    stage: { limit: "14.25" }                 # would breach limit_sanity if checked
+    world: { ltp_age_ms: 9000 }
+    expect: intent
+    readback: { warnings_contains: "sanity check skipped" }
+    note: >
+      Past max_quote_age_ms the sanity check is skipped, not relaxed, and the card
+      says so. A check against a ten-minute-old price is worse than none because it
+      looks like one. docs/04-safety.md.
+
+  - id: limit_far_from_ltp_rejects
+    phrase: "buy call"
+    stage: { limit: "14.25" }                 # LTP 142.50 — decimal slip
+    expect: reject
+    reject: { reason: limit_sanity }
+
+  - id: stale_quote_flags_but_limit_still_valid
+    phrase: "buy call"
+    world: { ltp_age_ms: 9000 }
+    expect: intent
+    intent: { price_type: LIMIT }
+    readback: { warnings_contains: "stale" }
+    note: "An explicit limit needs no LTP. Only the exposure figure is suspect."

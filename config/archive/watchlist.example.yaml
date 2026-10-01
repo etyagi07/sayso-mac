@@ -1,0 +1,184 @@
+# SUPERSEDED — archived 2026-09-29. Not current; written for ProjectZero's
+# abandoned staged-order model. The engine is sayso/. Do not use.
+
+# watchlist.yaml — the alias table.
+#
+# This is the most important file in the project. It IS the model.
+# Keep it under ~30 names. Hand-maintained. Tuned to one trader's speech.
+#
+# Rules when adding a name:
+#   1. Run tools/check_aliases.py — no alias may collide with an existing one.
+#   2. Assign a check_word acoustically distinct from every other check_word
+#      in the same confusable_with group.
+#   3. Set default_qty to what this trader actually trades in this name.
+#
+# Copy to watchlist.yaml and edit. watchlist.yaml is gitignored.
+
+version: 1
+
+defaults:
+  product: MIS
+  protection_pct: 0.5        # for protected-market orders on cash
+  retention: DAY
+
+symbols:
+
+  # ── The canonical confusable group ──────────────────────────────────────
+  - key: HDFCBANK
+    tsym: HDFCBANK-EQ
+    exch: NSE
+    token: "1333"            # cache from the symbol master; verify at startup
+    aliases: [hdfc bank, hdfcbank, bank hdfc]
+    ambiguous_aliases: [hdfc]        # matches, but ALWAYS challenges
+    check_word: bank
+    confusable_with: [HDFCLIFE, HDFCAMC]
+    spoken: "H D F C Bank"
+    default_qty: 40
+    default_product: MIS
+    max_qty: 200
+    max_notional: 500000
+    shortable: true
+    derivative:
+      lot_size: 550
+      fut_root: HDFCBANK
+
+  - key: HDFCLIFE
+    tsym: HDFCLIFE-EQ
+    exch: NSE
+    aliases: [hdfc life, hdfclife, life hdfc]
+    ambiguous_aliases: [hdfc]
+    check_word: life
+    confusable_with: [HDFCBANK, HDFCAMC]
+    spoken: "H D F C Life"
+    default_qty: 300
+    default_product: MIS
+    max_qty: 1200
+    max_notional: 300000
+    shortable: true
+
+  - key: HDFCAMC
+    tsym: HDFCAMC-EQ
+    exch: NSE
+    aliases: [hdfc amc, hdfcamc, asset management hdfc]
+    ambiguous_aliases: [hdfc]
+    check_word: asset          # NOT "amc" — too close to "bank"/"life" in a noisy room
+    confusable_with: [HDFCBANK, HDFCLIFE]
+    spoken: "H D F C A M C"
+    default_qty: 20
+    default_product: MIS
+    max_qty: 80
+    max_notional: 300000
+    shortable: true
+
+  # ── Unambiguous large caps ──────────────────────────────────────────────
+  - key: RELIANCE
+    tsym: RELIANCE-EQ
+    exch: NSE
+    aliases: [reliance, ril, reliance industries]
+    check_word: reliance
+    spoken: "Reliance"
+    default_qty: 50
+    default_product: MIS
+    max_qty: 250
+    max_notional: 600000
+    shortable: true
+    derivative:
+      lot_size: 500
+      fut_root: RELIANCE
+
+  - key: TCS
+    tsym: TCS-EQ
+    exch: NSE
+    aliases: [tcs, t c s, tata consultancy]
+    check_word: tcs
+    spoken: "T C S"
+    default_qty: 25
+    default_product: MIS
+    max_qty: 100
+    max_notional: 400000
+    shortable: true
+
+  - key: INFY
+    tsym: INFY-EQ
+    exch: NSE
+    aliases: [infy, infosys]
+    check_word: infosys
+    spoken: "Infosys"
+    default_qty: 60
+    default_product: MIS
+    max_qty: 250
+    max_notional: 400000
+    shortable: true
+
+  # ── A deliberately-noted near-collision ─────────────────────────────────
+  # "tata motors" / "tata steel" / "tata power" all start with "tata".
+  # They are NOT marked ambiguous on their full aliases, but the bare word
+  # "tata" is ambiguous across all three and must challenge.
+  - key: TATAMOTORS
+    tsym: TATAMOTORS-EQ
+    exch: NSE
+    aliases: [tata motors, tatamotors, motors]
+    ambiguous_aliases: [tata]
+    check_word: motors
+    confusable_with: [TATASTEEL, TATAPOWER]
+    spoken: "Tata Motors"
+    default_qty: 100
+    default_product: MIS
+    max_qty: 400
+    max_notional: 400000
+    shortable: true
+
+  - key: TATASTEEL
+    tsym: TATASTEEL-EQ
+    exch: NSE
+    aliases: [tata steel, tatasteel, steel]
+    ambiguous_aliases: [tata]
+    check_word: steel
+    confusable_with: [TATAMOTORS, TATAPOWER]
+    spoken: "Tata Steel"
+    default_qty: 400
+    default_product: MIS
+    max_qty: 1500
+    max_notional: 300000
+    shortable: true
+
+  # ── Index derivatives ───────────────────────────────────────────────────
+  - key: NIFTY
+    exch: NFO
+    aliases: [nifty, nifty fifty, nifty 50]
+    check_word: nifty
+    spoken: "Nifty"
+    default_qty: 1            # in LOTS for derivatives
+    default_product: NRML
+    max_qty: 5                # lots
+    max_notional: 2000000
+    shortable: true
+    instrument: FUT
+    derivative:
+      lot_size: 75            # verify against the current contract spec
+      fut_root: NIFTY
+      protection_pct: 1.0
+
+  - key: BANKNIFTY
+    exch: NFO
+    aliases: [bank nifty, banknifty]
+    check_word: banknifty
+    confusable_with: [NIFTY]    # "nifty" is a substring — the checker will flag it
+    spoken: "Bank Nifty"
+    default_qty: 1
+    default_product: NRML
+    max_qty: 3
+    max_notional: 2000000
+    shortable: true
+    instrument: FUT
+    derivative:
+      lot_size: 35            # verify against the current contract spec
+      fut_root: BANKNIFTY
+      protection_pct: 1.0
+
+# ── Notes for the collision checker ────────────────────────────────────────
+# "nifty" is contained in "bank nifty". The checker must detect substring
+# containment across aliases, not just exact duplicates, and either require
+# the shorter one to be marked ambiguous or require the longer one to be
+# matched preferentially (longest-alias-wins). Implement longest-alias-wins
+# AND flag the pair, so the human decides.
