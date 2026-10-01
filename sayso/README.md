@@ -48,7 +48,17 @@ back to you, and only sends it when you press `y`.
 >   defaults;
 > - account questions return `show` (positions, funds, orders);
 > - option and exit previews carry `option_type`, the contract, and
->   `strike_adjusted_from` / `strike_chosen`.
+>   `strike_adjusted_from` / `strike_chosen`;
+> - `listen.download_mb()` (the speech model's one-time download size).
+>
+> **Heard better** (from the panel's own log, 2026-10-01)
+> - intraday as Whisper spells it: "Enter day", "INTRADY", "INTREDY";
+> - "buy a YESBANK" is 1 share; "Buy one." answers "how many?" (the
+>   other side never does);
+> - index levels: "what is Nifty at?", "where's Bank Nifty?";
+> - "is F&O enabled?" checks the account's segments;
+> - "buy one YESBANK, no, buy two YESBANK": the new command wins (a "no" at
+>   the very start is still a no).
 
 > ### ⚠️ This places real orders with real money
 >

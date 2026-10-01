@@ -1,7 +1,11 @@
 # HANDOFF — start the next session here
 
-**Say to the new session:** "Read `HANDOFF.md` and `CLAUDE.md` in ProjectZero,
-then continue."
+**Say to the new session:** "Read `HANDOFF.md` and `CLAUDE.md` in
+Sayso-Basic, then continue."
+
+> **This is the basic, parser-only Sayso for Mac**, published as
+> `github.com/etyagi07/sayso-mac`. There is no AI here: that work happens in a
+> separate local folder.
 
 ## What this is
 
@@ -22,7 +26,7 @@ needs it, with tests. Ekansh decides the features. Keep it lean and fast.
 - nothing is sent without a keypress;
 - anything uncertain cancels;
 - no trading logic in the face;
-- never touch `~/Desktop/sayso` (the client's live copy).
+- never touch `~/Desktop/Sayso/sayso` (the client's live copy).
 
 ## State (2026-09-30): live, real money
 
@@ -42,13 +46,13 @@ needs it, with tests. Ekansh decides the features. Keep it lean and fast.
 | Path | What |
 |---|---|
 | `test.sh` | **Runs every suite** (engine, bridge, panel) and says pass or fail: `./test.sh` (about 2 minutes). |
-| `sayso/` | The engine fork, with Python 3.13 in `.venv`. It has 15 test files (191 tests): `cd sayso && for t in tests/test_*.py; do .venv/bin/python "$t"; done`. They all run in a temp `SAYSO_HOME` and never touch live state. |
-| `bridge/bridge.py` | Runs the engine on 127.0.0.1: on 8787 (also the Shoonya OAuth redirect). No demo mode. It drives `agent.handle(text, confirm)` and streams events over SSE. `--fake` is the scripted demo. |
-| `tests/test_bridge.py` | 55 bridge tests over real HTTP, including Sayso's real `voice.agent` and `voice.watch` with a stubbed broker: `sayso/.venv/bin/python -m unittest discover -s tests` (about 60 s). |
-| `app/` | The SwiftUI panel. `./build.sh` builds `app/build/Sayso.app`, the **dev** build, which runs this checkout's engine with this Mac's state. `app/Tests`: 43 tests, run with `cd app && swift test`. `--snapshot DIR` renders every state to PNG, and `--icon FILE` renders the icon. |
+| `sayso/` | The engine fork, with Python 3.13 in `.venv`. It has 16 test files (210 tests): `cd sayso && for t in tests/test_*.py; do .venv/bin/python "$t"; done`. They all run in a temp `SAYSO_HOME` and never touch live state. |
+| `bridge/bridge.py` | Runs the engine on 127.0.0.1: on 8787 (also the Shoonya OAuth redirect). No demo mode. It drives `agent.handle(text, confirm)` and streams events over SSE. Its tests run on a scripted engine (`tests/fakes.py`, `tests/scripted_bridge.py`) that is never shipped. |
+| `tests/test_bridge.py` | 65 bridge tests over real HTTP, including Sayso's real `voice.agent` and `voice.watch` with a stubbed broker: `sayso/.venv/bin/python -m unittest discover -s tests` (about 60 s). |
+| `app/` | The SwiftUI panel. `./build.sh` builds `app/build/Sayso.app`, the **dev** build, which runs this checkout's engine with this Mac's state. `app/Tests`: 49 tests, run with `cd app && swift test`. `--snapshot DIR` renders every state to PNG, and `--icon FILE` renders the icon. |
 | `app/package.sh` | Builds the **packaged** app into `app/build/dist/Sayso.app`. It installs itself into `~/Library/Application Support/Sayso`. See "Packaging" in `README.md`. |
 | `app/sign.sh`, `app/entitlements/` | Sign and notarise the packaged app: hardened runtime, and the embedded Python's entitlements. `DEVELOPER_ID=-` tests it ad hoc. |
-| `logs/` | Dev-build logs. `bridge.log` holds the engine's output. `face.jsonl` holds, per command, the words heard, the decision (with card_id, symbol, quantity, price, ms), the outcome (tag, order_no) and fills. Demo writes `face-demo.jsonl`. Logs rotate at 5 MB. |
+| `logs/` | Dev-build logs. `bridge.log` holds the engine's output. `face.jsonl` holds, per command, the words heard, the decision (with card_id, symbol, quantity, price, ms), the outcome (tag, order_no) and fills. Logs rotate at 5 MB. |
 | `docs/user-guide.md` | For traders: install, set-up, first order, screens, troubleshooting, uninstall. |
 | `docs/face-spec.md` | The face design spec. `docs/archive/` is history only. |
 | `FINDINGS.md` | The original scan and decisions log. Newer decisions are in `CLAUDE.md` §E and the review docs. |
@@ -69,9 +73,11 @@ needs it, with tests. Ekansh decides the features. Keep it lean and fast.
 - **Right-click:**
   - Positions, Today's orders, Funds;
   - Setup & health;
-  - Account (when there is more than one);
+  - Account (switch, or New account…);
+  - Talk key (pick the push-to-talk chord);
+  - Your limits…;
   - Copy diagnostics, Open logs folder;
-  - Quit.
+  - Quit Sayso.
 
 ## Next up
 
@@ -100,7 +106,7 @@ needs it, with tests. Ekansh decides the features. Keep it lean and fast.
    - whether hover tooltips show on the non-activating panel. "copy details"
      works regardless.
 
-   The translucent panel was checked on screen on 2026-10-01 (demo), along
+   The translucent panel was checked on screen on 2026-10-01 (in the since-removed demo), along
    with the card, banner and `y` key.
 3. **Open questions for Ekansh** (review 09-30 §E):
    - SEBI and Shoonya vendor status;
@@ -108,10 +114,10 @@ needs it, with tests. Ekansh decides the features. Keep it lean and fast.
    - a EULA, which should come from a lawyer;
    - an opt-in to keep the secret in the Keychain.
 
-   Done: a first-run "real money, not advice" notice (live only, once per
+   Done: a first-run "real money, not advice" notice (once per
    Mac), and a factual privacy note in the user guide.
 4. **Smaller items left from the reviews:**
-   - CI (there is no remote; `./test.sh` is the local stand-in).
+   - CI: none yet. GitHub Actions on a macOS runner could run `./test.sh`.
 
    Done on 2026-10-01 (later):
    - **Login:** a login that comes back for a different account than the
@@ -216,5 +222,4 @@ Built and tested:
   you sure?", an order above the limit refused).
 - Developer ID signing, then a clean-Mac test.
 - The legal questions.
-- Git history still holds a real account ID and IP in old commits: scrub it
-  before adding any remote.
+- This repo's history is fresh (2026-10-01): no real account ID or IP.

@@ -15,7 +15,7 @@ floating panel that sits beside the chart all day.
 | **Body kit** | everything else here | how it looks, sounds, onboards and is supported; no trading logic |
 
 The engine may be changed where the product needs it, in the fork only and
-with tests. The client's live copy (`~/Desktop/sayso`) is never modified from
+with tests. The client's live copy (`~/Desktop/Sayso/sayso`) is never modified from
 here.
 
 ## Read in this order
@@ -60,9 +60,9 @@ cd app && swift test
 
 | Suite | What |
 |---|---|
-| Engine | 15 files |
-| Bridge | 62 tests over real HTTP, including the real agent with a stubbed broker |
-| Panel | 47 tests: the state machine, the installer, and every shape's fit |
+| Engine | 16 files, 210 tests |
+| Bridge | 65 tests over real HTTP, including the real agent with a stubbed broker |
+| Panel | 49 tests: the state machine, the installer, and every shape's fit |
 
 Nothing is sent anywhere, and no test touches live state.
 

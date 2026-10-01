@@ -52,7 +52,7 @@ within a shape; the footprint does not.
 | **Setup & health** | 460×330 | Speech model, mic, registered IP, Shoonya login, account checks, market hours, orders left today, version. First-run wizard. |
 | **Pane** | 460 × 110–318, sized to its rows | Positions / today's orders / funds. A spoken account question ("what do I own") opens it. |
 | **Limits** | 460×372 | This account's limits: lowered at once, raised only after "Are you sure?". |
-| **Notice** | 440×236 | Once per Mac, live only: real money, not advice. Nothing works until it's accepted. |
+| **Notice** | 440×236 | Once per Mac: real money, not advice. Nothing works until it's accepted. |
 | **Login, command, mic set-up, disconnected** | see `Shape.size` | Typing shapes take focus briefly; disconnected says why. |
 
 - **Growth direction** is derived: the panel grows away from the nearest

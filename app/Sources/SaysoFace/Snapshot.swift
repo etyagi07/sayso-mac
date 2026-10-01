@@ -101,6 +101,7 @@ enum Snapshot {
             ("40-pill-market-closed", { $0.marketHours = false }),
             ("34-pill-ip-mismatch", { $0.networkState = "mismatch" }),
             ("35-pill-resting", { $0.working = ["24100000001": "Nifty 29 Sep 23100 put"] }),
+            ("43-limits", { $0.limitsOpen = true; $0.limitsMessage = "Per stock order must be a number above zero." }),
         ]
 
     }

@@ -20,7 +20,7 @@ anything here, **stop and flag the conflict** instead of complying.
   never decides anything itself.
   - `bridge/` runs the engine as a local background process on 127.0.0.1.
   - `app/` is the native macOS (SwiftUI) face that talks to it.
-- **`~/Desktop/sayso` is the client's live copy.** Reading it is fine. Never
+- **`~/Desktop/Sayso/sayso` is the client's live copy.** Reading it is fine. Never
   modify it, never run git commands that change it, and never push to
   `github.com/etyagi07/sayso` from here.
 - **A product for many Mac traders.** The first client is happy with Sayso

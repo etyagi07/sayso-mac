@@ -246,7 +246,9 @@ anything you said.
 1. Quit Sayso: right-click → **Quit Sayso**. Delete `Sayso.app`.
 2. Delete `~/Library/Application Support/Sayso`. It holds the engine, your
    login token and the logs.
-3. Delete `~/.cache/huggingface/hub/models--mlx-community--whisper-small.en-mlx`.
-   That is the speech model.
+3. The speech model is in that folder too, so step 2 removed it. (Versions
+   before 2026-10-01 kept it in
+   `~/.cache/huggingface/hub/models--mlx-community--whisper-small.en-mlx`:
+   delete that too if it's there.)
 4. Optionally, run `defaults delete com.ekanshtyagi.sayso` to forget the
    remembered IDs.
